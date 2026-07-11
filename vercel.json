@@ -1,9 +1,12 @@
 {
-     "rewrites": [
-       {
-         "source": "/:event",
-         "destination": "/api/join?event=:event"
-       }
-     ]
-   }
-
+  "rewrites": [
+    {
+      "source": "/reserve/:event",
+      "destination": "/api/reserve?event=:event"
+    },
+    {
+      "source": "/:event",
+      "destination": "/api/join?event=:event"
+    }
+  ]
+}
