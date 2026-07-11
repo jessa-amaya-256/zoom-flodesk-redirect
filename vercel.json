@@ -1,0 +1,8 @@
+{
+     "rewrites": [
+       {
+         "source": "/:event",
+         "destination": "/api/join?event=:event"
+       }
+     ]
+   }
