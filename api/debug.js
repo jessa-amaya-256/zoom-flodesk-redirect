@@ -60,3 +60,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Request failed', details: String(err) });
   }
 };
+
