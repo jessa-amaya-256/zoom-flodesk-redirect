@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
       'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
 
     const response = await fetch(
-      `${FLODESK_API_BASE}/subscribers/${encodeURIComponent(email)}`,
+      `${FLODESK_API_BASE}/subscribers/${encodeURIComponent(email).replace(/%40/g, '@')}`,
       {
         headers: {
           Authorization: authHeader,
@@ -60,4 +60,3 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Request failed', details: String(err) });
   }
 };
-
