@@ -25,7 +25,7 @@
 const EVENT_CONFIG = {
   'celebrity-alaska': {
     flodeskField: 'zoomLinkCelebrityAlaska',
-    fallbackUrl: 'https://www.jessicaclark.travel/celebrity-alaska',
+    fallbackUrl: 'https://www.amaya-travel.com',
   },
   // 'next-event-slug': {
   //   flodeskField: 'zoom_link_next_event',
