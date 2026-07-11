@@ -24,7 +24,7 @@
 // To add a new event: add a new entry here and redeploy.
 const EVENT_CONFIG = {
   'celebrity-alaska': {
-    flodeskField: 'zoom_link_celebrity_alaska',
+    flodeskField: 'zoomLinkCelebrityAlaska',
     fallbackUrl: 'https://www.jessicaclark.travel/celebrity-alaska',
   },
   // 'next-event-slug': {
@@ -65,7 +65,7 @@ module.exports = async (req, res) => {
       'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
 
     const response = await fetch(
-      `${FLODESK_API_BASE}/subscribers/${encodeURIComponent(email)}`,
+      `${FLODESK_API_BASE}/subscribers/${encodeURIComponent(email).replace(/%40/g, '@')}`,
       {
         headers: {
           Authorization: authHeader,
