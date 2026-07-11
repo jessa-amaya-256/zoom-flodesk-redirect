@@ -36,7 +36,15 @@ const EVENT_CONFIG = {
 const FLODESK_API_BASE = 'https://api.flodesk.com/v1';
 
 module.exports = async (req, res) => {
-  const { event, email } = req.query;
+  const { event } = req.query;
+  // Flodesk's `@Email` merge tag only renders inside plain Text blocks —
+  // it does NOT render inside Button/Link href fields. Flodesk instead
+  // provides a separate link-level snippet, `{{ subscriber.email }}`,
+  // meant to be pasted directly into a URL (their documented use case is
+  // `?adt_ei={{ subscriber.email }}`). We accept that param name here,
+  // while still falling back to `email` in case this is hit manually
+  // (e.g. during testing) or from a non-Flodesk source.
+  const email = req.query.adt_ei || req.query.email;
 
   // --- Basic input validation ---
   if (!event || !email) {
