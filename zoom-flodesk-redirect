@@ -1,9 +1,0 @@
-{
-     "name": "zoom-flodesk-redirect",
-     "version": "1.0.0",
-     "private": true,
-     "description": "Redirects event registrants to their personalized Zoom join link, looked up from Flodesk.",
-     "engines": {
-       "node": ">=18"
-     }
-   }
