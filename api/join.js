@@ -12,12 +12,17 @@
  *
  * In your Flodesk email, the button/link URL should be:
  *   https://join.jessicaclark.travel/celebrity-alaska?adt_ei={{ subscriber.email }}
- * (`{{ subscriber.email }}` is Flodesk's link-level email snippet — it
- * works inside Button/Link URL fields, unlike the `@Email` merge tag,
- * which only renders inside plain Text block content.)
+ *   (`{{ subscriber.email }}` is Flodesk's link-level email snippet — it
+ *   works inside Button/Link URL fields, unlike the `@Email` merge tag,
+ *   which only renders inside plain Text block content.)
+ *
+ * Event config (flodeskField / fallbackUrl) now comes from
+ * lib/eventConfig.js — Edge Config first, static lib/events.js as a
+ * fallback. See that file and README-events-sync.md for how new
+ * events (Airtable → Zap → Edge Config) flow in.
  */
 
-const { EVENT_CONFIG } = require('../lib/events');
+const { getEventConfig } = require('../lib/eventConfig');
 
 const FLODESK_API_BASE = 'https://api.flodesk.com/v1';
 
@@ -30,7 +35,7 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const config = EVENT_CONFIG[event];
+  const config = await getEventConfig(event);
   if (!config) {
     res.status(404).send(`Unknown event: ${event}`);
     return;
