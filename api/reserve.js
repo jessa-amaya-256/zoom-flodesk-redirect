@@ -20,9 +20,14 @@
  *
  * Called via:
  *   https://join.jessicaclark.travel/reserve?event=virgin-voyages&adt_ei={{ subscriber.email }}
+ *
+ * Event config (segmentId / fallbackUrl) now comes from
+ * lib/eventConfig.js — Edge Config first, static lib/events.js as a
+ * fallback. See that file and README-events-sync.md for how new
+ * events (Airtable → Zap → Edge Config) flow in.
  */
 
-const { EVENT_CONFIG } = require('../lib/events');
+const { getEventConfig } = require('../lib/eventConfig');
 
 const FLODESK_API_BASE = 'https://api.flodesk.com/v1';
 
@@ -30,34 +35,11 @@ const FLODESK_API_BASE = 'https://api.flodesk.com/v1';
 // landing page needs to exist on your site for this to work.
 function renderConfirmation() {
   return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>You're confirmed</title>
-  <style>
-    body {
-      font-family: 'Helvetica Neue', Arial, sans-serif;
-      background: #F4F4F0;
-      color: #1C1E1D;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      text-align: center;
-      padding: 24px;
-    }
-    .card { max-width: 420px; }
-    h1 { font-size: 24px; font-weight: 600; margin-bottom: 12px; }
-    p { font-size: 16px; line-height: 1.5; color: #4C4F4A; }
-  </style>
-</head>
+<html lang="en">
+<head><meta charset="UTF-8"><title>You're confirmed</title></head>
 <body>
-  <div class="card">
-    <h1>You're confirmed.</h1>
-    <p>Your spot is reserved. Check your inbox shortly for your private access details.</p>
-  </div>
+  <h1>You're confirmed.</h1>
+  <p>Your spot is reserved. Check your inbox shortly for your private access details.</p>
 </body>
 </html>`;
 }
@@ -71,7 +53,7 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const config = EVENT_CONFIG[event];
+  const config = await getEventConfig(event);
   if (!config) {
     res.status(404).send(`Unknown event: ${event}`);
     return;
