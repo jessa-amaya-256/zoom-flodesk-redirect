@@ -5,6 +5,10 @@
       "destination": "/api/reserve?event=:event"
     },
     {
+      "source": "/partner/:slug",
+      "destination": "/api/partner?slug=:slug"
+    },
+    {
       "source": "/:event",
       "destination": "/api/join?event=:event"
     }
