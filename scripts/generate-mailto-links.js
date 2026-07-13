@@ -27,7 +27,7 @@
  *      - Scopes: data.records:read, data.records:write
  *      - Access: add the "Private Virtual Preview - Events" base specifically
  * 2. Add it to your shell (zsh):
- *      echo 'export AIRTABLE_TOKEN="pat_your_token_here"' >> ~/.zshrc
+ *      echo 'export AIRTABLE_API_KEY="pat_your_token_here"' >> ~/.zshrc
  *      source ~/.zshrc
  *
  * REQUIREMENTS FOR A ROW TO BE PROCESSED
@@ -41,7 +41,7 @@ const fs = require("fs");
 const path = require("path");
 
 // Plain `node` does not load .env files on its own — this reads the repo's
-// root .env file (same one .env.example documents) so AIRTABLE_TOKEN can
+// root .env file (same one .env.example documents) so AIRTABLE_API_KEY can
 // live there instead of requiring a manual `export` every session. Real
 // shell-exported env vars still take priority over anything in .env.
 function loadDotEnv() {
@@ -69,11 +69,11 @@ const BASE_ID = "appv81raB2A2g9x1Y";
 const TABLE_ID = "tblUO05tbzi65COsl"; // Partners
 const API_ROOT = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`;
 
-const TOKEN = process.env.AIRTABLE_TOKEN;
+const TOKEN = process.env.AIRTABLE_API_KEY;
 if (!TOKEN) {
   console.error(
-    "AIRTABLE_TOKEN is not set. Add a line to your .env file in the repo root:\n" +
-    "  AIRTABLE_TOKEN=pat_your_token_here\n" +
+    "AIRTABLE_API_KEY is not set. Add a line to your .env file in the repo root:\n" +
+    "  AIRTABLE_API_KEY=pat_your_token_here\n" +
     "(See the SETUP section at the top of this file for how to generate one.)"
   );
   process.exit(1);
