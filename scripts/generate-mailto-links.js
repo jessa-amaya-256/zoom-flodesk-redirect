@@ -37,6 +37,34 @@
  * Rows missing any of those three are skipped and listed at the end.
  */
 
+const fs = require("fs");
+const path = require("path");
+
+// Plain `node` does not load .env files on its own — this reads the repo's
+// root .env file (same one .env.example documents) so AIRTABLE_TOKEN can
+// live there instead of requiring a manual `export` every session. Real
+// shell-exported env vars still take priority over anything in .env.
+function loadDotEnv() {
+  const envPath = path.join(__dirname, "..", ".env"); // scripts/../.env = repo root
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+loadDotEnv();
+
 const BASE_ID = "appv81raB2A2g9x1Y";
 const TABLE_ID = "tblUO05tbzi65COsl"; // Partners
 const API_ROOT = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`;
@@ -44,7 +72,9 @@ const API_ROOT = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`;
 const TOKEN = process.env.AIRTABLE_TOKEN;
 if (!TOKEN) {
   console.error(
-    "AIRTABLE_TOKEN is not set. See the SETUP section at the top of this file."
+    "AIRTABLE_TOKEN is not set. Add a line to your .env file in the repo root:\n" +
+    "  AIRTABLE_TOKEN=pat_your_token_here\n" +
+    "(See the SETUP section at the top of this file for how to generate one.)"
   );
   process.exit(1);
 }
@@ -117,8 +147,27 @@ async function patchRecords(updates) {
   }
 }
 
+function printBanner(regenerateAll) {
+  console.log("============================================================");
+  console.log(" Partners Mailto Link Generator");
+  console.log(" Fills in \"Mailto Link\" for any Partners row that already");
+  console.log(" has Name + Subject Line + Intro Paragraph written.");
+  console.log(" ");
+  console.log(regenerateAll
+    ? " Mode: --all (regenerating EVERY row, including ones that"
+    : " Mode: default (only filling in BLANK Mailto Link rows —"
+  );
+  console.log(regenerateAll
+    ? "        already have a Mailto Link)"
+    : "        run with --all to force-regenerate every row instead,"
+  );
+  if (!regenerateAll) console.log("        e.g. after editing the email template below)");
+  console.log("============================================================\n");
+}
+
 async function main() {
   const regenerateAll = process.argv.includes("--all");
+  printBanner(regenerateAll);
 
   console.log("Fetching records from Airtable...");
   const records = await fetchAllRecords();
