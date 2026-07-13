@@ -105,7 +105,7 @@ async function main() {
 
   let generated = 0;
   let skippedDone = 0;
-  let skippedNotConfirmed = 0;
+  const statusCounts = {}; // tally of every non-Confirmed, non-QR-Generated status seen
 
   for (const row of rows) {
     const fields = row.fields || {};
@@ -125,7 +125,7 @@ async function main() {
     }
 
     if (status !== 'Confirmed') {
-      skippedNotConfirmed += 1;
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
       continue;
     }
 
@@ -159,7 +159,9 @@ async function main() {
   console.log('\nSummary:');
   console.log(`  Generated:      ${generated}`);
   console.log(`  Already done:   ${skippedDone}`);
-  console.log(`  Not confirmed:  ${skippedNotConfirmed}`);
+  for (const [status, count] of Object.entries(statusCounts).sort()) {
+    console.log(`  ${status}:`.padEnd(18) + count);
+  }
 }
 
 main().catch((err) => {
