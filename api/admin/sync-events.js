@@ -53,7 +53,24 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { events } = req.body || {};
+  let { events } = req.body || {};
+
+  // Zapier's Webhooks by Zapier (JSON payload type) sends whatever value
+  // is mapped into a field as-is — if the upstream Code by Zapier step
+  // already JSON.stringify()'d the array (which it does, since passing
+  // real arrays through Zapier's own field mapping gets silently mangled
+  // into a lossy debug-string format), events arrives here as a STRING
+  // containing JSON text, not a real array. Parse it if so, rather than
+  // fight Zapier's payload builder further.
+  if (typeof events === 'string') {
+    try {
+      events = JSON.parse(events);
+    } catch (err) {
+      res.status(400).send('Field "events" was a string but not valid JSON.');
+      return;
+    }
+  }
+
   if (!Array.isArray(events) || events.length === 0) {
     res.status(400).send('Missing or empty required field: events (array).');
     return;
