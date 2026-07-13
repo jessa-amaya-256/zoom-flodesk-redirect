@@ -26,6 +26,19 @@
  *   node scripts/generate-gmail-drafts.js              # dry run — prints what it WOULD create
  *   node scripts/generate-gmail-drafts.js --create     # actually create the drafts
  *   node scripts/generate-gmail-drafts.js --create --limit 3   # create just the first 3 (TEST THIS FIRST)
+ *   node scripts/generate-gmail-drafts.js --create --force     # re-draft partners who already have one
+ *
+ * TRACKING — two different states, deliberately kept separate
+ * -----------------------------------------------------------
+ * "Draft Created" (date field, written by THIS script)
+ *     = a Gmail draft exists for this partner. Rows with a date here are
+ *       skipped on future runs, so re-running is safe and won't duplicate.
+ *       Use --force to re-draft anyway (e.g. after editing someone's intro).
+ *
+ * "Status" (single-select, written by YOU, by hand)
+ *     = the real relationship state. Flip it to "Contacted" once you actually
+ *       hit Send in Gmail. The script never touches this field, because it
+ *       genuinely cannot know whether you sent the draft or deleted it.
  *
  * ONE-TIME SETUP
  * --------------
@@ -210,6 +223,7 @@ async function fetchAllRecords() {
 async function main() {
   const args = process.argv.slice(2);
   const doCreate = args.includes("--create");
+  const force = args.includes("--force");
   const limitIdx = args.indexOf("--limit");
   const limit = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : null;
 
@@ -226,7 +240,15 @@ async function main() {
     console.log("        Add --create to actually create them.");
     console.log("        Tip: start with --create --limit 3 to test.");
   }
+  if (force) {
+    console.log(" --force: re-drafting partners who ALREADY have a draft");
+    console.log("          (you'll get duplicates unless you delete the old ones)");
+  }
   if (limit) console.log(` Limit: first ${limit} eligible partner(s) only`);
+  console.log("");
+  console.log(" NOTE: 'Draft Created' in Airtable = this script made a draft.");
+  console.log("       It does NOT mean the email was sent. Flip Status to");
+  console.log("       'Contacted' yourself once you actually hit Send.");
   console.log("============================================================\n");
 
   console.log("Fetching partners from Airtable...");
@@ -237,6 +259,7 @@ async function main() {
   const skippedNoEmail = [];
   const skippedClosed = [];
   const skippedNoCopy = [];
+  const skippedAlreadyDrafted = [];
 
   for (const r of records) {
     const f = r.fields || {};
@@ -245,6 +268,7 @@ async function main() {
     const subject = f["Subject Line"];
     const email = f["Email"];
     const status = f["Status"];
+    const draftCreated = f["Draft Created"];
 
     if (status === "Closed") {
       skippedClosed.push(name || r.id);
@@ -258,7 +282,11 @@ async function main() {
       skippedNoEmail.push(name);
       continue;
     }
-    eligible.push({ name, email, subject, intro });
+    if (draftCreated && !force) {
+      skippedAlreadyDrafted.push(`${name} (${draftCreated})`);
+      continue;
+    }
+    eligible.push({ id: r.id, name, email, subject, intro });
   }
 
   const toProcess = limit ? eligible.slice(0, limit) : eligible;
@@ -284,6 +312,13 @@ async function main() {
     skippedNoCopy.forEach((n) => console.log(`  - ${n}`));
     console.log("");
   }
+  if (skippedAlreadyDrafted.length) {
+    console.log(
+      `Skipped — draft already created (${skippedAlreadyDrafted.length}) — use --force to re-draft:`
+    );
+    skippedAlreadyDrafted.forEach((n) => console.log(`  - ${n}`));
+    console.log("");
+  }
 
   if (!doCreate) {
     console.log("--- DRY RUN: would create drafts for ---");
@@ -301,7 +336,9 @@ async function main() {
   const gmail = google.gmail({ version: "v1", auth });
 
   console.log(`Creating ${toProcess.length} draft(s)...\n`);
-  let created = 0;
+  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  const succeeded = [];
+
   for (const p of toProcess) {
     const raw = buildRawMessage(p.email, p.subject, buildBody(p.name, p.intro));
     try {
@@ -309,15 +346,44 @@ async function main() {
         userId: "me",
         requestBody: { message: { raw } },
       });
-      created++;
+      succeeded.push(p);
       console.log(`  ✓ ${p.name}`);
     } catch (err) {
       console.error(`  ✗ ${p.name} — ${err.message}`);
     }
   }
 
-  console.log(`\nDone. Created ${created} draft(s).`);
+  // Stamp "Draft Created" in Airtable, but ONLY for drafts that actually
+  // succeeded — a failed draft must stay un-stamped so the next run retries it.
+  if (succeeded.length) {
+    console.log(`\nStamping "Draft Created" in Airtable...`);
+    const updates = succeeded.map((p) => ({
+      id: p.id,
+      fields: { "Draft Created": today },
+    }));
+    for (let i = 0; i < updates.length; i += 10) {
+      const chunk = updates.slice(i, i + 10);
+      const res = await fetch(API_ROOT, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${AIRTABLE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ records: chunk }),
+      });
+      if (!res.ok) {
+        console.error(`  Airtable update failed: ${res.status} ${await res.text()}`);
+      } else {
+        console.log(`  stamped ${chunk.length} record(s)`);
+      }
+    }
+  }
+
+  console.log(`\nDone. Created ${succeeded.length} draft(s).`);
   console.log("Open Gmail → Drafts to review and send each one.");
+  console.log(
+    'Remember: flip Status to "Contacted" in Airtable once you actually hit Send.'
+  );
 }
 
 main().catch((err) => {
