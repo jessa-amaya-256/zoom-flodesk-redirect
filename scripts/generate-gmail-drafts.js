@@ -107,12 +107,14 @@
  *
  * Also required, in .env at the repo root:
  *      AIRTABLE_API_KEY=pat_...
- *      REGISTRATION_URL=https://...      <- the {Registration URL} token
  *
- * REGISTRATION_URL is an env var because the Events table has no field for it
- * (the RSVP URL currently lives only in Vercel Edge Config as
- * CURRENT_EVENT_RSVP_URL). The better fix is a "Registration URL" field on the
- * Events table so it is per-cycle rather than per-run. Until then, this.
+ * That is the ONLY thing .env needs. The {Registration URL} token comes from
+ * the "Registration URL" field on the Events table — per-cycle, alongside the
+ * hook and the date it belongs to. It was briefly a REGISTRATION_URL env var,
+ * which was wrong: an env var is a per-MACHINE value for a per-CYCLE fact, so
+ * forgetting to hand-edit it in October would have rendered the Celebrity link
+ * into every Virgin Voyages email, silently. Now an unpopulated cycle simply
+ * refuses to draft.
  */
 
 const fs = require("fs");
@@ -345,14 +347,6 @@ function buildRawMessage(to, subject, bodyText) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  const registrationUrl = process.env.REGISTRATION_URL;
-  if (!registrationUrl) {
-    console.error(
-      "REGISTRATION_URL is not set. Add it to .env — it is the {Registration URL} token."
-    );
-    process.exit(1);
-  }
-
   console.log("Fetching from Airtable...");
   const [events, partners, templates, outreach] = await Promise.all([
     fetchAll(TABLES.events, [
@@ -362,6 +356,7 @@ async function main() {
       "Portfolio Partner",
       "Event Hook",
       "Event Date (Display)",
+      "Registration URL",
     ]),
     fetchAll(TABLES.partners, [
       "Name",
@@ -450,10 +445,14 @@ async function main() {
   console.log("       yourself once you actually hit Send.");
   console.log("============================================================\n");
 
+  // Registration URL is required, and required PER CYCLE. This is the check
+  // that makes an unpopulated cycle fail loudly instead of quietly rendering
+  // the previous cycle's RSVP link into every email.
   const missingEventFields = [
     "Portfolio Partner",
     "Event Hook",
     "Event Date (Display)",
+    "Registration URL",
   ].filter((f) => !event.fields[f]);
 
   if (missingEventFields.length) {
@@ -540,7 +539,7 @@ async function main() {
       "Event Date": event.fields["Event Date (Display)"],
       "Event Portfolio": event.fields["Portfolio Partner"],
       "Event Hook": event.fields["Event Hook"],
-      "Registration URL": registrationUrl,
+      "Registration URL": event.fields["Registration URL"],
     };
 
     const subject = render(template.fields["Subject Template"], tokens);
