@@ -297,6 +297,16 @@ const SECONDARY_ASK_LINES = {
     " And if a client of yours is ever dreaming up a trip, I would be honored to be someone you point them to.",
 };
 
+// The {Community Phrase} token — Option B. The opener says either "queer-owned"
+// (recognition, for a business VERIFIED queer-owned from its own words) or
+// "queer-owned and queer-loved" (true for an ally, or a row not yet verified).
+// Never claim ownership we cannot verify: that is the Metier / Browsers failure
+// in Appendix A. Only "Queer-owned (verified)" earns the pointed phrase.
+const COMMUNITY_PHRASE_BY_OWNERSHIP = {
+  "Queer-owned (verified)": "queer-owned",
+};
+const DEFAULT_COMMUNITY_PHRASE = "queer-owned and queer-loved";
+
 // Immutable table IDs. Never substitute names.
 // tblUO05tbzi65COsl is "Partners (legacy)" — the archive. Deliberately absent.
 const TABLES = {
@@ -511,6 +521,7 @@ async function main() {
       "Cluster Lead", // exactly one row per cluster gets the letter.
       "Best Ask", // selects the Touch 1 template by ask type. Fallback: Card.
       "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
+      "Ownership", // fills {Community Phrase}. Verified queer-owned -> pointed opener.
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
@@ -865,6 +876,8 @@ async function main() {
       "Event Portfolio": event.fields["Portfolio Partner"],
       "Event Hook": event.fields["Event Hook"],
       "Registration URL": event.fields["Registration URL"],
+      "Community Phrase":
+        COMMUNITY_PHRASE_BY_OWNERSHIP[p["Ownership"]] || DEFAULT_COMMUNITY_PHRASE,
     };
 
     // Per-partner template, chosen by primary ask (Touch 1). See resolveTemplate.
