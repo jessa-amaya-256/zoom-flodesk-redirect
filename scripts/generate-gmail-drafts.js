@@ -30,6 +30,22 @@
  * copy-pasted into generate-mailto-links.js and drifted. Copy now lives in the
  * Templates table so it can be edited without touching code.
  *
+ * THE {City} TOKEN (added 2026-07-14)
+ * ------------------------------------
+ * The Touch 1 body used to hardcode "around Seattle and Portland". The partner
+ * roster now includes Bellingham, Olympia, Vancouver WA, Bainbridge Island and
+ * Kirkland. To a partner in any of those, that line named two cities they are
+ * not in and then claimed they "kept coming up" — undercutting the one
+ * paragraph whose entire job is proving the email is not a blast.
+ *
+ * {City} now resolves from Partners."City". See DEFAULT_CITY_PHRASE below for
+ * why a blank City degrades gracefully instead of skipping the row.
+ *
+ * DEPLOY ORDER, IF YOU EVER ADD ANOTHER TOKEN: ship the code BEFORE putting the
+ * token into a Template. The unresolved-token assert below will skip every row
+ * for a token the code does not supply. That is the assert working, but it will
+ * stall a cycle while you work out why.
+ *
  * THE ACTIVE CYCLE IS AUTO-SELECTED
  * ----------------------------------
  * --event is OPTIONAL. When omitted, the cycle is derived from Airtable: the
@@ -177,6 +193,22 @@ if (!AIRTABLE_KEY) {
 }
 
 const BASE_ID = "appv81raB2A2g9x1Y";
+
+// Fallback for the {City} token when a Partner row has no City set.
+//
+// Deliberately NOT a hard gate, unlike "Specific Detail". A blank Specific
+// Detail means nobody found one true thing to say about the business, and
+// skipping that row is the entire point of the gate. A blank City is just a
+// missing metadata field, and the sentence stays true without it:
+// "researching queer-owned businesses around the Pacific Northwest" is
+// accurate for every partner in this base.
+//
+// So a missing City degrades gracefully rather than killing an otherwise good
+// row. It reads correctly in the slot it lands in, which is:
+//
+//   "...researching queer-owned businesses around {City} while I was getting
+//    my own travel practice ready to launch."
+const DEFAULT_CITY_PHRASE = "the Pacific Northwest";
 
 // Immutable table IDs. Never substitute names.
 // tblUO05tbzi65COsl is "Partners (legacy)" — the archive. Deliberately absent.
@@ -387,6 +419,7 @@ async function main() {
       "Contact Method",
       "Greeting Name",
       "Specific Detail",
+      "City", // feeds the {City} token. See DEFAULT_CITY_PHRASE.
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
@@ -588,6 +621,11 @@ async function main() {
   const skippedTooSoon = [];
   const skippedBadTokens = [];
 
+  // Partners whose City was blank and fell back to DEFAULT_CITY_PHRASE. Not a
+  // skip and not an error — the email still reads correctly. Reported at the
+  // end so a systematic gap in the City column is visible rather than silent.
+  const usedCityFallback = [];
+
   for (const row of rows) {
     const partnerId = (row.fields.Partner || [])[0];
     const partner = partnerId ? partnersById.get(partnerId) : undefined;
@@ -656,10 +694,16 @@ async function main() {
       continue;
     }
 
+    // {City} is NOT a gate. A blank City degrades to DEFAULT_CITY_PHRASE, which
+    // keeps the sentence true, rather than skipping a partner who has a good
+    // sourced detail and a working email address over a missing metadata field.
+    if (!p.City) usedCityFallback.push(name);
+
     const tokens = {
       "Greeting Name": p["Greeting Name"] || "there",
       "Partner Name": p.Name,
       "Specific Detail": p["Specific Detail"],
+      City: p.City || DEFAULT_CITY_PHRASE,
       "Event Date": event.fields["Event Date (Display)"],
       "Event Portfolio": event.fields["Portfolio Partner"],
       "Event Hook": event.fields["Event Hook"],
@@ -738,6 +782,17 @@ async function main() {
   );
   reportSkips("no linked Partner", skippedNoPartner, "broken Outreach row");
   reportSkips("UNRESOLVED TOKENS", skippedBadTokens, "template or Event data is incomplete");
+
+  // Not a skip. These drafted fine, but their City cell is empty, so the email
+  // says "around the Pacific Northwest" instead of naming their town. Fixable
+  // in ten seconds in Airtable, and worth knowing about before you send.
+  if (usedCityFallback.length) {
+    console.log(
+      `Note — no City set, fell back to "${DEFAULT_CITY_PHRASE}" (${usedCityFallback.length}):`
+    );
+    usedCityFallback.forEach((n) => console.log(`  - ${n}`));
+    console.log("  These still drafted. Set City in Airtable to name their town.\n");
+  }
 
   console.log(`Eligible for drafting: ${eligible.length}`);
   if (args.limit) console.log(`Processing this run:   ${toProcess.length}`);
