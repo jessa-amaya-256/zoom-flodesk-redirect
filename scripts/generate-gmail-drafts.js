@@ -33,13 +33,32 @@
  * THE {City} TOKEN (added 2026-07-14)
  * ------------------------------------
  * The Touch 1 body used to hardcode "around Seattle and Portland". The partner
- * roster now includes Bellingham, Olympia, Vancouver WA, Bainbridge Island and
- * Kirkland. To a partner in any of those, that line named two cities they are
- * not in and then claimed they "kept coming up" — undercutting the one
- * paragraph whose entire job is proving the email is not a blast.
+ * roster now includes Bellingham, Olympia, Snohomish County, Vancouver WA and
+ * more. To a partner in any of those, that line named two cities they are not
+ * in and then claimed they "kept coming up" — undercutting the one paragraph
+ * whose entire job is proving the email is not a blast.
  *
  * {City} now resolves from Partners."City". See DEFAULT_CITY_PHRASE below for
  * why a blank City degrades gracefully instead of skipping the row.
+ *
+ * THE CLUSTER GATE (added 2026-07-14)
+ * ------------------------------------
+ * Airtable holds one row per BUSINESS. Some people own more than one.
+ *
+ *   Osbaldo Hernandez & Dennis Ramey  ->  El Sueñito Brewing + Frelard Tamales
+ *   Jody Hall                         ->  Cupcake Royale + Wunderground Coffee
+ *   Nat Stratton-Clarke               ->  Cafe Flora + Floret
+ *
+ * One row per business means one draft per business, which means the SAME
+ * PERSON opens two cold emails on the same morning. That is the fastest way in
+ * existence to be read as a mail merge, and it destroys the exact thing the
+ * Specific Detail is built to prove.
+ *
+ * So: Partners."Cluster" names the owner. Partners."Cluster Lead" marks the ONE
+ * row that gets the letter. Everyone else in the cluster is skipped, loudly.
+ *
+ * The Lead's copy names BOTH rooms, so a yes covers both. Do not send a second
+ * letter to the other room later. They will remember.
  *
  * DEPLOY ORDER, IF YOU EVER ADD ANOTHER TOKEN: ship the code BEFORE putting the
  * token into a Template. The unresolved-token assert below will skip every row
@@ -82,6 +101,8 @@
  *             touch already sent, or draft a follow-up before it is due. You
  *             will get duplicate Gmail drafts unless you delete the old ones.
  *             --force does NOT override the Replied gate. Nothing does.
+ *             --force does NOT override the Cluster gate either. Sending two
+ *             cold emails to one person is never what you meant to do.
  *
  * WHEN IS A TOUCH DUE? — the sequence rules
  * ------------------------------------------
@@ -118,16 +139,18 @@
  *     = the relationship state. 'Confirmed' -> 'QR Generated' drives the QR
  *       script. DO NOT REPURPOSE THIS FIELD.
  *
- * THE TWO GATES
- * -------------
- * 1. Empty "Specific Detail" -> SKIP. That blank means nobody has found one
+ * THE THREE GATES
+ * ---------------
+ * 1. Cluster member who is not the Lead -> SKIP. One human, one letter.
+ *
+ * 2. Empty "Specific Detail" -> SKIP. That blank means nobody has found one
  *    true, sourced sentence about this business. The row is skipped rather than
  *    padded with a generic line. The blank is a feature. Do not "fix" it by
  *    defaulting to filler.
  *
- * 2. "Contact Method" != Email -> SKIP. Roughly 20 of the 52 partners are
- *    DM / phone / in-person only. Route those to the Phone and Instagram DM
- *    scripts in the Templates table.
+ * 3. "Contact Method" != Email -> SKIP. Many partners are DM / phone /
+ *    in-person only. Route those to the Phone and Instagram DM scripts in the
+ *    Templates table.
  *
  * Plus a hard assert: if any {Token} survives rendering, the row is skipped
  * loudly. A body reading "Hi there, ... {Event Hook} ..." landing in a
@@ -420,6 +443,8 @@ async function main() {
       "Greeting Name",
       "Specific Detail",
       "City", // feeds the {City} token. See DEFAULT_CITY_PHRASE.
+      "Cluster", // one human, multiple rooms. See GATE 1.
+      "Cluster Lead", // exactly one row per cluster gets the letter.
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
@@ -499,6 +524,8 @@ async function main() {
   if (args.force) {
     console.log(" --force: re-drafting partners who ALREADY have a draft");
     console.log("          (you'll get duplicates unless you delete the old ones)");
+    console.log("          NOTE: --force does NOT override the Replied gate or");
+    console.log("          the Cluster gate. Neither is ever what you meant.");
   }
   if (args.limit) console.log(` Limit: first ${args.limit} eligible partner(s) only`);
   console.log("");
@@ -612,6 +639,7 @@ async function main() {
 
   const eligible = [];
   const skippedNoPartner = [];
+  const skippedClusterMember = [];
   const skippedNoDetail = [];
   const skippedNotEmail = [];
   const skippedNoAddress = [];
@@ -639,22 +667,45 @@ async function main() {
     const name = p.Name || partner.id;
     const o = row.fields;
 
-    // GATE 1 — THEY REPLIED. Stop. Nothing below this matters.
-    // --force does not override this. There is no version of "they answered
-    // you, so send the follow-up anyway" that is correct.
+    // GATE 1 — CLUSTERS. One human, multiple rooms, ONE letter.
+    //
+    // Airtable holds one row per BUSINESS. Some people own more than one:
+    //
+    //   Osbaldo Hernandez & Dennis Ramey -> El Sueñito + Frelard Tamales
+    //   Jody Hall                        -> Cupcake Royale + Wunderground
+    //   Nat Stratton-Clarke              -> Cafe Flora + Floret
+    //
+    // Without this gate, each of those people receives TWO cold emails on the
+    // same morning, addressed to two of their own businesses, each claiming
+    // the other "kept coming up" during months of careful research. That is
+    // the fastest way in existence to be read as a mail merge, and it destroys
+    // the exact thing the Specific Detail is built to prove.
+    //
+    // The Lead's copy names BOTH rooms, so a yes covers both.
+    //
+    // --force does NOT override this. There is no situation in which sending
+    // one person two cold letters is the thing you meant to do.
+    if (p.Cluster && !p["Cluster Lead"]) {
+      skippedClusterMember.push(`${name} (cluster: ${p.Cluster})`);
+      continue;
+    }
+
+    // GATE 2 — THEY REPLIED. Stop. Nothing below this matters.
+    // --force does not override this either. There is no version of "they
+    // answered you, so send the follow-up anyway" that is correct.
     if (o.Replied) {
       skippedReplied.push(`${name} (replied ${o.Replied})`);
       continue;
     }
 
-    // GATE 2 — this touch already went out.
+    // GATE 3 — this touch already went out.
     const thisTouchSent = o[`Touch ${args.touch} Sent`];
     if (thisTouchSent && !args.force) {
       skippedTouchAlreadySent.push(`${name} (sent ${thisTouchSent})`);
       continue;
     }
 
-    // GATE 3 — the previous touch has to have been SENT, and long enough ago.
+    // GATE 4 — the previous touch has to have been SENT, and long enough ago.
     if (args.touch > 1) {
       const prevSentRaw = o[`Touch ${args.touch - 1} Sent`];
 
@@ -675,7 +726,7 @@ async function main() {
       }
     }
 
-    // GATE 4 — the quality gate. A blank Specific Detail means nobody has
+    // GATE 5 — the quality gate. A blank Specific Detail means nobody has
     // found one true, sourced thing to say about this business. Skipped rather
     // than padded with filler. The blank is a feature.
     if (!p["Specific Detail"]) {
@@ -683,7 +734,7 @@ async function main() {
       continue;
     }
 
-    // GATE 5 — channel.
+    // GATE 6 — channel.
     if (p["Contact Method"] !== "Email") {
       skippedNotEmail.push(`${name} (${p["Contact Method"] || "no method set"})`);
       continue;
@@ -739,7 +790,15 @@ async function main() {
     console.log("");
   };
 
-  // Sequence skips first — on a touch-2 or touch-3 run these are the numbers
+  // The cluster gate first, because it is the one whose absence would be
+  // catastrophic and whose presence looks, at a glance, like a bug.
+  reportSkips(
+    "CLUSTER MEMBER, not the Lead",
+    skippedClusterMember,
+    "the Lead's letter covers this room too. This is deliberate, not a bug"
+  );
+
+  // Sequence skips next — on a touch-2 or touch-3 run these are the numbers
   // that explain the result, and "0 eligible" is usually correct rather than
   // broken.
   reportSkips(
