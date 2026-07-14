@@ -18,8 +18,17 @@
  * this link goes out in an email — otherwise the segment-add has
  * nothing listening for it.
  *
- * Called via:
- *   https://join.jessicaclark.travel/reserve?event=virgin-voyages&adt_ei={{ subscriber.email }}
+ * Called via the PATH form:
+ *   https://join.jessicaclark.travel/reserve/virgin-voyages?adt_ei={{ subscriber.email }}
+ *
+ * Use the path form in Flodesk. The old query-string form
+ * (/reserve?event=virgin-voyages) previously did NOT reach this route:
+ * with no path segment after /reserve it failed to match the
+ * "/reserve/:event" rewrite and fell through to the catch-all
+ * "/:event" rewrite, landing on /api/join with event="reserve" and
+ * returning "Unknown event: reserve". A bare "/reserve" → "/api/reserve"
+ * rewrite has since been added above the catch-all in vercel.json so
+ * the query form also works, but the path form is canonical.
  *
  * Event config (segmentId / fallbackUrl) now comes from
  * lib/eventConfig.js — Edge Config first, static lib/events.js as a
