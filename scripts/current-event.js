@@ -53,6 +53,7 @@ const EVENT_FIELDS = [
   "Portfolio Partner",
   "Event Hook",
   "Event Date (Display)",
+  "Registration URL",
 ];
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,7 @@ async function cli() {
       `Active cycle: ${f["Event Name"]}\n` +
         `  Portfolio:  ${f["Portfolio Partner"] || "(not set)"}\n` +
         `  Date:       ${f["Event Date (Display)"] || "(not set)"}\n` +
+        `  RSVP page:  ${f["Registration URL"] || "(NOT SET — drafting will refuse to run)"}\n` +
         `  Starts:     ${f["Event Start (UTC)"]}\n` +
         `  Rolls over to the next cycle at that instant.`
     );
