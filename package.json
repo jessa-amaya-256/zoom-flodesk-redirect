@@ -10,9 +10,15 @@
     "@vercel/edge-config": "^1.4.0"
   },
   "devDependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "googleapis": "^144.0.0",
     "qrcode": "^1.5.4"
   },
   "scripts": {
-    "generate-qr": "node scripts/generate-qr-codes.js"
+    "generate-qr": "node scripts/generate-qr-codes.js",
+    "qr-check": "./scripts/run-qr-check.sh",
+    "cycle": "node scripts/current-event.js --verbose",
+    "draft-check": "node scripts/generate-gmail-drafts.js",
+    "draft-gen": "node scripts/generate-gmail-drafts.js --create"
   }
 }
