@@ -6,7 +6,7 @@
  *
  * Pulls confirmed B2B partners from Airtable, generates a print-ready
  * SVG QR code for each one pointing at that partner's
- * join.jessicaclark.travel redirect slug, and marks each row as done
+ * join.clarkco.travel redirect slug, and marks each row as done
  * in Airtable so reruns only touch new confirmations.
  *
  * Usage:
@@ -27,6 +27,29 @@
  *   Name    (single line text)
  *   Slug    (single line text, e.g. "fairhaven-gallery")
  *   Status  (single select, must include "Confirmed" and "QR Generated")
+ *
+ * ---------------------------------------------------------------------
+ * DOMAIN CHANGED 2026-07-14: join.jessicaclark.travel -> join.clarkco.travel
+ *
+ * WHY: jessicaclark.travel matched nothing the business actually uses.
+ * The printed business card says CLARK & CO. TRAVEL. The legal entity is
+ * Clark & Co. Travel LLC. The Flodesk account is clarkco. The old domain
+ * existed only in this constant.
+ *
+ * WHY NOW: at the time of the swap, ZERO rows were Confirmed or QR
+ * Generated, so ZERO QR codes existed and ZERO cards had been printed.
+ * The switching cost was exactly zero and it was never going to be that
+ * cheap again.
+ *
+ * IF YOU EVER CHANGE THE DOMAIN AGAIN, READ THIS FIRST:
+ * This script SKIPS rows already marked "QR Generated" so that reruns are
+ * safe. That is correct behavior and it is also a trap. Change the domain
+ * after cards are in the field and those rows will be skipped forever —
+ * they will never be reissued, and every printed card will keep pointing
+ * at the old domain. You would then have to either keep the old domain
+ * alive permanently, or manually reset Status to "Confirmed" on every
+ * affected row and reprint. Do not discover this the hard way.
+ * ---------------------------------------------------------------------
  */
 
 const fs = require('fs');
@@ -36,7 +59,7 @@ const QRCode = require('qrcode');
 const AIRTABLE_API_BASE = 'https://api.airtable.com/v0';
 const BASE_ID = 'appv81raB2A2g9x1Y'; // Not a secret. Only the PAT is.
 const TABLE_ID = 'tblFlH8ssP07XdrhZ'; // Partners — immutable ID, do not swap for the name
-const REDIRECT_BASE = 'https://join.jessicaclark.travel/partner';
+const REDIRECT_BASE = 'https://join.clarkco.travel/partner';
 const OUTPUT_DIR = path.join(__dirname, '..', 'output');
 const DEFAULT_COLOR = '#000000';
 
@@ -111,6 +134,7 @@ async function main() {
   }
 
   console.log(`Fetching rows from ${TABLE_ID} (Partners)...`);
+  console.log(`Redirect base: ${REDIRECT_BASE}`);
   const rows = await fetchPartnerRows(apiKey, BASE_ID);
 
   // Schema check, done ONCE against the whole result set rather than
@@ -163,6 +187,10 @@ async function main() {
       continue;
     }
 
+    // No ?m= here on purpose. api/partner.js defaults a bare link to
+    // utm_medium=card, and the printed card is the one medium that can
+    // never append a parameter after the fact — whatever is encoded at
+    // print time ships forever. Keep the encoded URL clean.
     const targetUrl = `${REDIRECT_BASE}/${slug}`;
     const outputPath = path.join(OUTPUT_DIR, `qr-${slug}.svg`);
 
