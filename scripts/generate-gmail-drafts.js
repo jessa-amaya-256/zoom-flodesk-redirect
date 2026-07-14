@@ -2,73 +2,101 @@
 /**
  * generate-gmail-drafts.js
  *
- * Creates a real Gmail DRAFT for each partner in the Airtable Partners table.
- * You then open Gmail, review each one, and hit Send yourself.
+ * Creates a real Gmail DRAFT for each partner in one event cycle. You then
+ * open Gmail, review each one, and hit Send yourself. This script never sends.
  *
- * WHY THIS REPLACES THE MAILTO APPROACH
- * --------------------------------------
- * mailto: links carry the email body inside a URL. Somewhere between Airtable
- * and the mail client, an extra decode pass was corrupting them: "%2B" became
- * a literal "+" (rendered as a space), and "%26" became a literal "&", which
- * TERMINATED the body parameter — that's why every draft cut off mid-sentence
- * at "specializing in queer" (the next chars being " & allied travel").
+ * WHAT CHANGED FROM THE PREVIOUS VERSION — READ THIS
+ * ---------------------------------------------------
+ * The old version read TABLE_ID "tblUO05tbzi65COsl", commented as "Partners".
+ * That is "Partners (legacy)" — the ARCHIVE table. It drafted from the old
+ * 92-row roster (including businesses since cut as closed, non-existent, or
+ * failing the affluence/density thesis) and stamped "Draft Created" onto
+ * archive rows. That was a live footgun and it is now gone.
  *
- * This script sends the body as base64-encoded MIME instead of a URL, so &, +,
- * em-dashes, apostrophes, and line breaks are simply not special characters.
- * The whole class of bug disappears.
+ * This version reads the current schema:
  *
- * NOTE: This creates DRAFTS ONLY. It never sends anything. Nothing touches
- * Gmail's sending limits or your domain's sender reputation until you
- * personally click Send on each one.
+ *   Outreach (one row per Partner x Event)   tblstWlG7RC3R4fRA
+ *     -> Partner   (stable facts)            tblFlH8ssP07XdrhZ
+ *     -> Event     (per-cycle facts)         tbl8I56RgDqgXFpQ5
+ *     + Templates  (copy lives in Airtable)  tblwww889pqm5NAGE
+ *
+ * All table references are by IMMUTABLE TABLE ID, never by name. Names are
+ * mutable, and there is an archive table one rename away from being the thing
+ * this script writes to. That is exactly the mistake being fixed here.
+ *
+ * The email body no longer lives in this file. The old buildBody() hardcoded
+ * "Tuesday, September 22nd with Celebrity Cruises", which meant every new
+ * cycle required editing JavaScript — and the same template had already been
+ * copy-pasted into generate-mailto-links.js and drifted. Copy now lives in the
+ * Templates table so it can be edited without touching code.
  *
  * USAGE
  * -----
- *   node scripts/generate-gmail-drafts.js              # dry run — prints what it WOULD create
- *   node scripts/generate-gmail-drafts.js --create     # actually create the drafts
- *   node scripts/generate-gmail-drafts.js --create --limit 3   # create just the first 3 (TEST THIS FIRST)
- *   node scripts/generate-gmail-drafts.js --create --force     # re-draft partners who already have one
+ *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska
+ *       Dry run. Prints every rendered email in full. Creates nothing.
+ *       Requires no Gmail credentials at all. ALWAYS RUN THIS FIRST.
  *
- * TRACKING — two different states, deliberately kept separate
- * -----------------------------------------------------------
- * "Draft Created" (date field, written by THIS script)
- *     = a Gmail draft exists for this partner. Rows with a date here are
- *       skipped on future runs, so re-running is safe and won't duplicate.
- *       Use --force to re-draft anyway (e.g. after editing someone's intro).
+ *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create --limit 3
+ *       Create the first 3 drafts. Do this before a full run.
  *
- * "Status" (single-select, written by YOU, by hand)
- *     = the real relationship state. Flip it to "Contacted" once you actually
- *       hit Send in Gmail. The script never touches this field, because it
- *       genuinely cannot know whether you sent the draft or deleted it.
+ *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create
+ *       Create all eligible drafts.
  *
- * ONE-TIME SETUP
- * --------------
+ *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --touch=2 --create
+ *       Touch 2 (day 8). Touch 3 is day 18. Then stop — a fourth email to a
+ *       neighborhood business costs the relationship.
+ *
+ *   --force   Re-draft partners who already have a Draft Subject/Draft Body.
+ *             You will get duplicate Gmail drafts unless you delete the old ones.
+ *
+ * TRACKING — three states, deliberately kept separate
+ * ----------------------------------------------------
+ * Outreach."Draft Subject" / "Draft Body"  (written by THIS script)
+ *     = a Gmail draft exists. Rows with these populated are skipped on reruns,
+ *       so re-running is safe. --force overrides.
+ *
+ * Outreach."Touch 1/2/3 Sent"  (written by YOU, by hand)
+ *     = you actually clicked Send. The script cannot know whether you sent the
+ *       draft or deleted it, so it will not guess.
+ *
+ * Partners."Status"  (written by YOU; ALSO READ BY generate-qr-codes.js)
+ *     = the relationship state. 'Confirmed' -> 'QR Generated' drives the QR
+ *       script. DO NOT REPURPOSE THIS FIELD.
+ *
+ * THE TWO GATES
+ * -------------
+ * 1. Empty "Specific Detail" -> SKIP. That blank means nobody has found one
+ *    true, sourced sentence about this business. The row is skipped rather than
+ *    padded with a generic line. The blank is a feature. Do not "fix" it by
+ *    defaulting to filler.
+ *
+ * 2. "Contact Method" != Email -> SKIP. Roughly 20 of the 52 partners are
+ *    DM / phone / in-person only. Route those to the Phone and Instagram DM
+ *    scripts in the Templates table.
+ *
+ * Plus a hard assert: if any {Token} survives rendering, the row is skipped
+ * loudly. A body reading "Hi there, ... {Event Hook} ..." landing in a
+ * partner's inbox costs the relationship, not just the send.
+ *
+ * ONE-TIME SETUP (unchanged — your existing credentials.json/token.json work)
+ * ---------------------------------------------------------------------------
  * 1. npm install googleapis @google-cloud/local-auth
- *
- * 2. Create a Google Cloud project + enable the Gmail API:
+ * 2. Enable the Gmail API:
  *      https://console.cloud.google.com/apis/enableflow?apiid=gmail.googleapis.com
+ * 3. OAuth consent screen: App name anything, Audience = Internal.
+ * 4. Credentials > Create Client > Desktop app. Save JSON to repo root as
+ *    credentials.json
+ * 5. .gitignore BOTH credentials.json and token.json. They are secrets.
+ * 6. First run opens a browser to authorize, then saves token.json.
  *
- * 3. Configure the OAuth consent screen (Google Auth platform > Branding):
- *      - App name: anything ("Partner Outreach")
- *      - Audience: Internal  (you're on a Workspace domain, so this is available
- *        and means no Google verification review is needed)
+ * Also required, in .env at the repo root:
+ *      AIRTABLE_API_KEY=pat_...
+ *      REGISTRATION_URL=https://...      <- the {Registration URL} token
  *
- * 4. Create credentials (Google Auth platform > Clients > Create Client):
- *      - Application type: Desktop app
- *      - Download the JSON, save it in the REPO ROOT as: credentials.json
- *
- * 5. Add BOTH of these to .gitignore (they are secrets — never commit them):
- *      credentials.json
- *      token.json
- *
- * 6. First run will pop open a browser asking you to authorize. After that it
- *    saves token.json and won't ask again.
- *
- * WHAT GETS SKIPPED (and why)
- * ----------------------------
- * - Rows with no Email address (contact-form-only businesses) — nothing to draft to.
- * - Rows with Status = "Closed" — Coping Cookies, Santé Bar, Crush Bar, etc.
- * - Rows missing Name / Subject Line / Intro Paragraph — copy isn't written yet.
- * All skips are listed at the end so you know exactly who needs manual handling.
+ * REGISTRATION_URL is an env var because the Events table has no field for it
+ * (the RSVP URL currently lives only in Vercel Edge Config as
+ * CURRENT_EVENT_RSVP_URL). The better fix is a "Registration URL" field on the
+ * Events table so it is per-cycle rather than per-run. Until then, this.
  */
 
 const fs = require("fs");
@@ -107,8 +135,17 @@ if (!AIRTABLE_KEY) {
 }
 
 const BASE_ID = "appv81raB2A2g9x1Y";
-const TABLE_ID = "tblUO05tbzi65COsl"; // Partners
-const API_ROOT = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`;
+
+// Immutable table IDs. Never substitute names.
+// tblUO05tbzi65COsl is "Partners (legacy)" — the archive. Deliberately absent.
+const TABLES = {
+  events: "tbl8I56RgDqgXFpQ5",
+  partners: "tblFlH8ssP07XdrhZ",
+  outreach: "tblstWlG7RC3R4fRA",
+  templates: "tblwww889pqm5NAGE",
+};
+
+const apiRoot = (tableId) => `https://api.airtable.com/v0/${BASE_ID}/${tableId}`;
 
 const REPO_ROOT = path.join(__dirname, "..");
 const CREDENTIALS_PATH = path.join(REPO_ROOT, "credentials.json");
@@ -118,53 +155,108 @@ const TOKEN_PATH = path.join(REPO_ROOT, "token.json");
 // this script has no ability to actually send mail, by design.
 const SCOPES = ["https://www.googleapis.com/auth/gmail.compose"];
 
-// =============================================================================
-// EMAIL TEMPLATE — edit this block when reusing for a new event (e.g. Virgin
-// Voyages). `name` and `intro` are the only variables available.
-// =============================================================================
-function buildBody(name, intro) {
-  return [
-    "Hi there,",
-    intro,
-    `I'm a local queer business owner myself, and a luxury travel advisor ` +
-      `specializing in queer & allied travel — always looking for ways to ` +
-      `champion other small businesses doing it right, ${name} included.`,
-    `I'm hosting a Private Virtual Preview on Tuesday, September 22nd with ` +
-      `Celebrity Cruises — the first of a monthly series, this one exploring ` +
-      `Alaska. I'd love to swap support: I recommend ${name} to my clients ` +
-      `every chance I get, and in return — whatever's easiest on your end — ` +
-      `a small QR display for your counter, a mention in your newsletter, ` +
-      `or a shared social post.`,
-    "Open to a quick coffee sometime to compare notes?",
-  ].join("\r\n\r\n");
+// ---------------------------------------------------------------------------
+// args
+// ---------------------------------------------------------------------------
+
+function parseArgs(argv) {
+  const getEq = (name) => {
+    const flag = argv.find((a) => a.startsWith(`--${name}=`));
+    return flag ? flag.split("=").slice(1).join("=") : undefined;
+  };
+
+  const eventSlug = getEq("event");
+  if (!eventSlug) {
+    console.error(
+      "Missing required flag: --event=<slug>\n" +
+        "  e.g. --event=celebrity-alaska\n" +
+        "  Known slugs: celebrity-alaska, virgin-voyages, crystal-amawaterways, rocky-mountaineer"
+    );
+    process.exit(1);
+  }
+
+  const limitIdx = argv.indexOf("--limit");
+  const limit =
+    limitIdx !== -1 ? parseInt(argv[limitIdx + 1], 10) : Number(getEq("limit")) || null;
+
+  return {
+    eventSlug,
+    touch: Number(getEq("touch") || 1),
+    create: argv.includes("--create"),
+    force: argv.includes("--force"),
+    limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+  };
 }
-// =============================================================================
 
-/**
- * Build an RFC 2822 MIME message, base64url-encoded for the Gmail API.
- * UTF-8 + base64 transfer encoding so em-dashes and accented characters
- * (Santé Bar, Taqueria Los Puñales) survive intact.
- */
-function buildRawMessage(to, subject, bodyText) {
-  const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
-  const bodyBase64 = Buffer.from(bodyText, "utf8").toString("base64");
+// ---------------------------------------------------------------------------
+// airtable
+// ---------------------------------------------------------------------------
 
-  const mime = [
-    `To: ${to}`,
-    `Subject: ${encodedSubject}`,
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
-    "",
-    bodyBase64,
-  ].join("\r\n");
+async function fetchAll(tableId, fields) {
+  const records = [];
+  let offset;
+  do {
+    const url = new URL(apiRoot(tableId));
+    for (const f of fields) url.searchParams.append("fields[]", f);
+    if (offset) url.searchParams.set("offset", offset);
 
-  return Buffer.from(mime, "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${AIRTABLE_KEY}` },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Airtable fetch failed for ${tableId}: ${res.status} ${await res.text()}`
+      );
+    }
+    const data = await res.json();
+    records.push(...(data.records || []));
+    offset = data.offset;
+  } while (offset);
+  return records;
 }
+
+async function patchRecords(tableId, updates) {
+  // Airtable allows a max of 10 records per PATCH request.
+  for (let i = 0; i < updates.length; i += 10) {
+    const chunk = updates.slice(i, i + 10);
+    const res = await fetch(apiRoot(tableId), {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${AIRTABLE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ records: chunk }),
+    });
+    if (!res.ok) {
+      console.error(`  Airtable update failed: ${res.status} ${await res.text()}`);
+    } else {
+      console.log(`  stamped ${chunk.length} record(s)`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// render
+// ---------------------------------------------------------------------------
+
+function render(template, tokens) {
+  return String(template || "").replace(/\{([^}]+)\}/g, (match, key) => {
+    const value = tokens[key.trim()];
+    return value === undefined || value === null || value === "" ? match : value;
+  });
+}
+
+function findUnresolvedTokens(...rendered) {
+  const found = new Set();
+  for (const text of rendered) {
+    for (const m of text.matchAll(/\{[^}]+\}/g)) found.add(m[0]);
+  }
+  return [...found];
+}
+
+// ---------------------------------------------------------------------------
+// gmail
+// ---------------------------------------------------------------------------
 
 async function authorize() {
   if (fs.existsSync(TOKEN_PATH)) {
@@ -202,128 +294,280 @@ async function authorize() {
   return client;
 }
 
-async function fetchAllRecords() {
-  const records = [];
-  let offset;
-  do {
-    const url = offset ? `${API_ROOT}?offset=${offset}` : API_ROOT;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${AIRTABLE_KEY}` },
-    });
-    if (!res.ok) {
-      throw new Error(`Airtable fetch failed: ${res.status} ${await res.text()}`);
-    }
-    const data = await res.json();
-    records.push(...(data.records || []));
-    offset = data.offset;
-  } while (offset);
-  return records;
+/**
+ * RFC 2822 MIME, base64url-encoded for the Gmail API. UTF-8 + base64 transfer
+ * encoding so em-dashes, curly apostrophes and accented characters (Taqueria
+ * Los Puñales) survive intact. This is also why the mailto approach was
+ * abandoned: a body inside a URL gets an extra decode pass somewhere in the
+ * chain, "%26" becomes a literal "&", and the body parameter terminates
+ * mid-sentence. Base64 MIME has no special characters, so the whole class of
+ * bug disappears.
+ */
+function buildRawMessage(to, subject, bodyText) {
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
+  const bodyBase64 = Buffer.from(bodyText, "utf8").toString("base64");
+
+  const mime = [
+    `To: ${to}`,
+    `Subject: ${encodedSubject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    bodyBase64,
+  ].join("\r\n");
+
+  return Buffer.from(mime, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
 async function main() {
-  const args = process.argv.slice(2);
-  const doCreate = args.includes("--create");
-  const force = args.includes("--force");
-  const limitIdx = args.indexOf("--limit");
-  const limit = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : null;
+  const args = parseArgs(process.argv.slice(2));
+
+  const registrationUrl = process.env.REGISTRATION_URL;
+  if (!registrationUrl) {
+    console.error(
+      "REGISTRATION_URL is not set. Add it to .env — it is the {Registration URL} token."
+    );
+    process.exit(1);
+  }
 
   console.log("============================================================");
   console.log(" Gmail Draft Generator — Partner Outreach");
   console.log(" Creates reviewable DRAFTS in Gmail. Never sends anything.");
   console.log("");
+  console.log(` Event: ${args.eventSlug}`);
+  console.log(` Touch: ${args.touch}`);
   console.log(
-    doCreate
-      ? " Mode: --create (drafts WILL be created in your Gmail)"
-      : " Mode: DRY RUN (nothing will be created)"
+    args.create
+      ? " Mode:  --create (drafts WILL be created in your Gmail)"
+      : " Mode:  DRY RUN (nothing will be created)"
   );
-  if (!doCreate) {
+  if (!args.create) {
     console.log("        Add --create to actually create them.");
     console.log("        Tip: start with --create --limit 3 to test.");
   }
-  if (force) {
+  if (args.force) {
     console.log(" --force: re-drafting partners who ALREADY have a draft");
     console.log("          (you'll get duplicates unless you delete the old ones)");
   }
-  if (limit) console.log(` Limit: first ${limit} eligible partner(s) only`);
+  if (args.limit) console.log(` Limit: first ${args.limit} eligible partner(s) only`);
   console.log("");
-  console.log(" NOTE: 'Draft Created' in Airtable = this script made a draft.");
-  console.log("       It does NOT mean the email was sent. Flip Status to");
-  console.log("       'Contacted' yourself once you actually hit Send.");
+  console.log(' NOTE: Draft Subject/Body in Airtable = a draft was made.');
+  console.log("       It does NOT mean the email was sent. Stamp Touch N Sent");
+  console.log("       yourself once you actually hit Send.");
   console.log("============================================================\n");
 
-  console.log("Fetching partners from Airtable...");
-  const records = await fetchAllRecords();
-  console.log(`Found ${records.length} record(s).\n`);
+  console.log("Fetching from Airtable...");
+  const [events, partners, templates, outreach] = await Promise.all([
+    fetchAll(TABLES.events, [
+      "Event Name",
+      "Slug",
+      "Portfolio Partner",
+      "Event Hook",
+      "Event Date (Display)",
+    ]),
+    fetchAll(TABLES.partners, [
+      "Name",
+      "Email",
+      "Contact Method",
+      "Greeting Name",
+      "Specific Detail",
+    ]),
+    fetchAll(TABLES.templates, [
+      "Template Name",
+      "Touch Number",
+      "Channel",
+      "Subject Template",
+      "Body Template",
+      "Active",
+    ]),
+    fetchAll(TABLES.outreach, [
+      "Outreach",
+      "Partner",
+      "Event",
+      "Draft Subject",
+      "Draft Body",
+    ]),
+  ]);
+
+  // --- resolve the event -----------------------------------------------------
+
+  const event = events.find((e) => e.fields.Slug === args.eventSlug);
+  if (!event) {
+    console.error(
+      `No Event row with Slug "${args.eventSlug}".\n` +
+        `Known slugs: ${events.map((e) => e.fields.Slug).filter(Boolean).join(", ")}`
+    );
+    process.exit(1);
+  }
+
+  const missingEventFields = [
+    "Portfolio Partner",
+    "Event Hook",
+    "Event Date (Display)",
+  ].filter((f) => !event.fields[f]);
+
+  if (missingEventFields.length) {
+    console.error(
+      `Event "${args.eventSlug}" is missing: ${missingEventFields.join(", ")}.\n` +
+        "Fill these in on the Events table before rendering."
+    );
+    process.exit(1);
+  }
+
+  // --- resolve the template --------------------------------------------------
+  //
+  // Matching on Channel AND Touch Number AND Active is deliberate. Without the
+  // Channel filter, a naive lookup by touch number will non-deterministically
+  // grab the Phone or Instagram DM script, which are also Touch 1.
+
+  const template = templates.find(
+    (t) =>
+      t.fields.Channel === "Email" &&
+      Number(t.fields["Touch Number"]) === args.touch &&
+      t.fields.Active === true
+  );
+
+  if (!template) {
+    console.error(
+      `No ACTIVE Email template with Touch Number ${args.touch} in the Templates table.`
+    );
+    process.exit(1);
+  }
+  console.log(`Template: ${template.fields["Template Name"]}\n`);
+
+  const partnersById = new Map(partners.map((p) => [p.id, p]));
+  const rows = outreach.filter((o) => (o.fields.Event || []).includes(event.id));
+  console.log(`Outreach rows for this event: ${rows.length}\n`);
+
+  // --- render + gate ---------------------------------------------------------
 
   const eligible = [];
-  const skippedNoEmail = [];
-  const skippedClosed = [];
-  const skippedNoCopy = [];
+  const skippedNoPartner = [];
+  const skippedNoDetail = [];
+  const skippedNotEmail = [];
+  const skippedNoAddress = [];
   const skippedAlreadyDrafted = [];
+  const skippedBadTokens = [];
 
-  for (const r of records) {
-    const f = r.fields || {};
-    const name = f["Name"];
-    const intro = f["Intro Paragraph"];
-    const subject = f["Subject Line"];
-    const email = f["Email"];
-    const status = f["Status"];
-    const draftCreated = f["Draft Created"];
+  for (const row of rows) {
+    const partnerId = (row.fields.Partner || [])[0];
+    const partner = partnerId ? partnersById.get(partnerId) : undefined;
 
-    if (status === "Closed") {
-      skippedClosed.push(name || r.id);
+    if (!partner) {
+      skippedNoPartner.push(row.fields.Outreach || row.id);
       continue;
     }
-    if (!name || !intro || !subject) {
-      skippedNoCopy.push(name || r.id);
+
+    const p = partner.fields;
+    const name = p.Name || partner.id;
+
+    // GATE 1 — the quality gate.
+    if (!p["Specific Detail"]) {
+      skippedNoDetail.push(name);
       continue;
     }
-    if (!email) {
-      skippedNoEmail.push(name);
+
+    // GATE 2 — channel.
+    if (p["Contact Method"] !== "Email") {
+      skippedNotEmail.push(`${name} (${p["Contact Method"] || "no method set"})`);
       continue;
     }
-    if (draftCreated && !force) {
-      skippedAlreadyDrafted.push(`${name} (${draftCreated})`);
+
+    if (!p.Email) {
+      skippedNoAddress.push(name);
       continue;
     }
-    eligible.push({ id: r.id, name, email, subject, intro });
+
+    if (!args.force && (row.fields["Draft Subject"] || row.fields["Draft Body"])) {
+      skippedAlreadyDrafted.push(name);
+      continue;
+    }
+
+    const tokens = {
+      "Greeting Name": p["Greeting Name"] || "there",
+      "Partner Name": p.Name,
+      "Specific Detail": p["Specific Detail"],
+      "Event Date": event.fields["Event Date (Display)"],
+      "Event Portfolio": event.fields["Portfolio Partner"],
+      "Event Hook": event.fields["Event Hook"],
+      "Registration URL": registrationUrl,
+    };
+
+    const subject = render(template.fields["Subject Template"], tokens);
+    const body = render(template.fields["Body Template"], tokens);
+
+    const unresolved = findUnresolvedTokens(subject, body);
+    if (unresolved.length) {
+      skippedBadTokens.push(`${name} — ${unresolved.join(", ")}`);
+      continue;
+    }
+
+    eligible.push({
+      outreachId: row.id,
+      name: p.Name,
+      email: p.Email,
+      subject,
+      body,
+    });
   }
 
-  const toProcess = limit ? eligible.slice(0, limit) : eligible;
+  const toProcess = args.limit ? eligible.slice(0, args.limit) : eligible;
+
+  // --- report skips ----------------------------------------------------------
+
+  const reportSkips = (label, list, note) => {
+    if (!list.length) return;
+    console.log(`Skipped — ${label} (${list.length})${note ? ` — ${note}` : ""}:`);
+    list.forEach((n) => console.log(`  - ${n}`));
+    console.log("");
+  };
+
+  reportSkips(
+    "no Specific Detail",
+    skippedNoDetail,
+    "the quality gate, working as designed. Write one sourced sentence or leave them out"
+  );
+  reportSkips(
+    "not an Email channel",
+    skippedNotEmail,
+    "route these to the Phone / Instagram DM scripts in Templates"
+  );
+  reportSkips(
+    "Email channel but no address",
+    skippedNoAddress,
+    "data error — fix in Airtable"
+  );
+  reportSkips("draft already exists", skippedAlreadyDrafted, "use --force to re-draft");
+  reportSkips("no linked Partner", skippedNoPartner, "broken Outreach row");
+  reportSkips("UNRESOLVED TOKENS", skippedBadTokens, "template or Event data is incomplete");
 
   console.log(`Eligible for drafting: ${eligible.length}`);
-  if (limit) console.log(`Processing this run:   ${toProcess.length}`);
+  if (args.limit) console.log(`Processing this run:   ${toProcess.length}`);
   console.log("");
 
-  if (skippedClosed.length) {
-    console.log(`Skipped — marked Closed (${skippedClosed.length}):`);
-    skippedClosed.forEach((n) => console.log(`  - ${n}`));
-    console.log("");
-  }
-  if (skippedNoEmail.length) {
-    console.log(
-      `Skipped — no email on file (${skippedNoEmail.length}) — reach these via phone/Instagram/contact form:`
-    );
-    skippedNoEmail.forEach((n) => console.log(`  - ${n}`));
-    console.log("");
-  }
-  if (skippedNoCopy.length) {
-    console.log(`Skipped — missing Subject Line / Intro Paragraph (${skippedNoCopy.length}):`);
-    skippedNoCopy.forEach((n) => console.log(`  - ${n}`));
-    console.log("");
-  }
-  if (skippedAlreadyDrafted.length) {
-    console.log(
-      `Skipped — draft already created (${skippedAlreadyDrafted.length}) — use --force to re-draft:`
-    );
-    skippedAlreadyDrafted.forEach((n) => console.log(`  - ${n}`));
-    console.log("");
-  }
+  // --- dry run ---------------------------------------------------------------
 
-  if (!doCreate) {
-    console.log("--- DRY RUN: would create drafts for ---");
-    toProcess.forEach((p) => console.log(`  ${p.email.padEnd(38)} ${p.subject}`));
-    console.log("\nRe-run with --create to actually create these drafts.");
+  if (!args.create) {
+    for (const d of toProcess) {
+      console.log("─".repeat(72));
+      console.log(`TO:      ${d.name} <${d.email}>`);
+      console.log(`SUBJECT: ${d.subject}`);
+      console.log("");
+      console.log(d.body);
+      console.log("");
+    }
+    console.log("─".repeat(72));
+    console.log("\nDRY RUN — no Gmail drafts created, no Airtable fields written.");
+    console.log("Re-run with --create to actually create these drafts.");
     return;
   }
 
@@ -332,57 +576,46 @@ async function main() {
     return;
   }
 
+  // --- create ----------------------------------------------------------------
+
   const auth = await authorize();
   const gmail = google.gmail({ version: "v1", auth });
 
   console.log(`Creating ${toProcess.length} draft(s)...\n`);
-  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
   const succeeded = [];
 
-  for (const p of toProcess) {
-    const raw = buildRawMessage(p.email, p.subject, buildBody(p.name, p.intro));
+  for (const d of toProcess) {
+    const raw = buildRawMessage(d.email, d.subject, d.body);
     try {
       await gmail.users.drafts.create({
         userId: "me",
         requestBody: { message: { raw } },
       });
-      succeeded.push(p);
-      console.log(`  ✓ ${p.name}`);
+      succeeded.push(d);
+      console.log(`  ✓ ${d.name}`);
     } catch (err) {
-      console.error(`  ✗ ${p.name} — ${err.message}`);
+      console.error(`  ✗ ${d.name} — ${err.message}`);
     }
   }
 
-  // Stamp "Draft Created" in Airtable, but ONLY for drafts that actually
-  // succeeded — a failed draft must stay un-stamped so the next run retries it.
+  // Write Draft Subject/Body back to Airtable, but ONLY for drafts that
+  // actually succeeded — a failed draft must stay un-stamped so the next run
+  // retries it rather than silently skipping it forever.
   if (succeeded.length) {
-    console.log(`\nStamping "Draft Created" in Airtable...`);
-    const updates = succeeded.map((p) => ({
-      id: p.id,
-      fields: { "Draft Created": today },
-    }));
-    for (let i = 0; i < updates.length; i += 10) {
-      const chunk = updates.slice(i, i + 10);
-      const res = await fetch(API_ROOT, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${AIRTABLE_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ records: chunk }),
-      });
-      if (!res.ok) {
-        console.error(`  Airtable update failed: ${res.status} ${await res.text()}`);
-      } else {
-        console.log(`  stamped ${chunk.length} record(s)`);
-      }
-    }
+    console.log(`\nWriting Draft Subject / Draft Body to Outreach...`);
+    await patchRecords(
+      TABLES.outreach,
+      succeeded.map((d) => ({
+        id: d.outreachId,
+        fields: { "Draft Subject": d.subject, "Draft Body": d.body },
+      }))
+    );
   }
 
   console.log(`\nDone. Created ${succeeded.length} draft(s).`);
   console.log("Open Gmail → Drafts to review and send each one.");
   console.log(
-    'Remember: flip Status to "Contacted" in Airtable once you actually hit Send.'
+    `Remember: stamp "Touch ${args.touch} Sent" on the Outreach row once you actually hit Send.`
   );
 }
 
