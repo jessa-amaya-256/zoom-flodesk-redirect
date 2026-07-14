@@ -17,7 +17,6 @@
  * Requires env vars (e.g. in a local .env you load yourself, or export
  * directly in your shell):
  *   AIRTABLE_API_KEY
- *   AIRTABLE_BASE_ID
  *
  * Targets the Partners table BY TABLE ID (tblFlH8ssP07XdrhZ), not by
  * name. Names are mutable — there is already a "Partners (legacy)"
@@ -99,10 +98,9 @@ async function markRowGenerated(apiKey, baseId, recordId) {
 
 async function main() {
   const apiKey = process.env.AIRTABLE_API_KEY;
-  const baseId = process.env.AIRTABLE_BASE_ID;
 
-  if (!apiKey || !baseId) {
-    console.error('Missing AIRTABLE_API_KEY or AIRTABLE_BASE_ID in environment.');
+  if (!apiKey) {
+    console.error('Missing AIRTABLE_API_KEY in environment.');
     process.exit(1);
   }
 
@@ -113,7 +111,7 @@ async function main() {
   }
 
   console.log(`Fetching rows from ${TABLE_ID} (Partners)...`);
-  const rows = await fetchPartnerRows(apiKey, baseId);
+  const rows = await fetchPartnerRows(apiKey, BASE_ID);
 
   // Schema check, done ONCE against the whole result set rather than
   // per row. Airtable omits empty cells from the API response entirely
@@ -179,7 +177,7 @@ async function main() {
     });
 
     fs.writeFileSync(outputPath, svg, 'utf8');
-    await markRowGenerated(apiKey, baseId, row.id);
+    await markRowGenerated(apiKey, BASE_ID, row.id);
 
     console.log(`Generated ${outputPath} (${name || slug})`);
     generated += 1;
