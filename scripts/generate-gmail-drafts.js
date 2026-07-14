@@ -62,18 +62,41 @@
  *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create
  *       Override the auto-selected cycle.
  *
- *   --force   Re-draft partners who already have a Draft Subject/Draft Body.
- *             You will get duplicate Gmail drafts unless you delete the old ones.
+ *   --force   Draft anyway for people the sequence rules would skip: re-draft a
+ *             touch already sent, or draft a follow-up before it is due. You
+ *             will get duplicate Gmail drafts unless you delete the old ones.
+ *             --force does NOT override the Replied gate. Nothing does.
+ *
+ * WHEN IS A TOUCH DUE? — the sequence rules
+ * ------------------------------------------
+ * A partner gets touch N drafted only if ALL of these hold:
+ *
+ *   - They have not replied.  A reply ends the sequence. Full stop.
+ *   - "Touch N Sent" is blank. You haven't already sent this one.
+ *   - "Touch N-1 Sent" is filled. You cannot follow up on an email that never
+ *     went out — a draft sitting unsent in Gmail is not a sent email.
+ *   - Enough days have passed since touch N-1 was SENT (not drafted). The
+ *     interval comes from Templates."Send Offset (Days)" — 0 / 8 / 18.
+ *
+ * So on most days, `draft-touch2` correctly drafts nothing, and says so.
+ * Zero eligible is the healthy state, not a failure.
  *
  * TRACKING — three states, deliberately kept separate
  * ----------------------------------------------------
- * Outreach."Draft Subject" / "Draft Body"  (written by THIS script)
- *     = a Gmail draft exists. Rows with these populated are skipped on reruns,
- *       so re-running is safe. --force overrides.
- *
  * Outreach."Touch 1/2/3 Sent"  (written by YOU, by hand)
- *     = you actually clicked Send. The script cannot know whether you sent the
- *       draft or deleted it, so it will not guess.
+ *     = you actually clicked Send in Gmail. This is what gates the sequence.
+ *       The script cannot know whether you sent a draft or deleted it, so it
+ *       will not guess. If you don't stamp these, follow-ups never open.
+ *
+ * Outreach."Replied"  (written by YOU, by hand)
+ *     = they answered. Stamp it and the sequence stops for that partner,
+ *       immediately and permanently.
+ *
+ * Outreach."Draft Subject" / "Draft Body"  (written by THIS script)
+ *     = a PREVIEW of the most recent render. Overwritten on each touch.
+ *       NOT a gate — an earlier version used these to decide who to skip,
+ *       which meant touch 2 skipped everyone, because touch 1 had filled them
+ *       in. That was a bug. They are output, not state.
  *
  * Partners."Status"  (written by YOU; ALSO READ BY generate-qr-codes.js)
  *     = the relationship state. 'Confirmed' -> 'QR Generated' drives the QR
@@ -371,12 +394,18 @@ async function main() {
       "Channel",
       "Subject Template",
       "Body Template",
+      "Send Offset (Days)", // 0 / 8 / 18 — gates when a follow-up is due
       "Active",
     ]),
     fetchAll(TABLES.outreach, [
       "Outreach",
       "Partner",
       "Event",
+      "Stage",
+      "Touch 1 Sent",
+      "Touch 2 Sent",
+      "Touch 3 Sent",
+      "Replied",
       "Draft Subject",
       "Draft Body",
     ]),
@@ -488,6 +517,64 @@ async function main() {
   const rows = outreach.filter((o) => (o.fields.Event || []).includes(event.id));
   console.log(`Outreach rows for this event: ${rows.length}\n`);
 
+  // --- sequence rules --------------------------------------------------------
+  //
+  // A touch is DUE for a partner when all of the following hold:
+  //
+  //   * They have not replied. A reply ends the sequence, full stop. This is
+  //     the single most important gate here and its absence was a real bug —
+  //     the earlier version would happily draft a day-8 nudge to someone who
+  //     answered on day 2.
+  //
+  //   * This touch has not already been sent (Touch N Sent is blank).
+  //
+  //   * The PREVIOUS touch has been sent. You cannot follow up on an email
+  //     that never went out. This is what makes draft-touch2 do nothing
+  //     sensible on a cycle where Touch 1 is still sitting unsent in Gmail —
+  //     which is correct, and is now reported rather than silently confusing.
+  //
+  //   * Enough days have passed since the previous touch was SENT. Not since
+  //     it was drafted — drafts can sit for days. The interval comes from
+  //     Templates."Send Offset (Days)": Touch 1 = 0, Touch 2 = 8, Touch 3 = 18.
+  //     Those are offsets from Touch 1, so the wait for touch N is
+  //     (offset N - offset N-1) days after touch N-1 actually went out.
+  //
+  // Draft Subject / Draft Body are NOT a gate. They are a preview of the most
+  // recent render, overwritten each touch. Treating them as a gate is what
+  // made draft-touch2 skip everybody: Touch 1 had filled them in.
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const offsetFor = (touchNumber) => {
+    const t = templates.find(
+      (x) =>
+        x.fields.Channel === "Email" &&
+        Number(x.fields["Touch Number"]) === touchNumber &&
+        x.fields.Active === true
+    );
+    const raw = t && t.fields["Send Offset (Days)"];
+    return Number.isFinite(Number(raw)) ? Number(raw) : null;
+  };
+
+  // How many days must elapse after touch N-1 is SENT before touch N is due.
+  let requiredWaitDays = 0;
+  if (args.touch > 1) {
+    const thisOffset = offsetFor(args.touch);
+    const prevOffset = offsetFor(args.touch - 1);
+    if (thisOffset === null || prevOffset === null) {
+      console.error(
+        `Cannot compute the wait for touch ${args.touch}: "Send Offset (Days)" is missing on the Touch ${args.touch} or Touch ${args.touch - 1} Email template. Fill it in (0 / 8 / 18).`
+      );
+      process.exit(1);
+    }
+    requiredWaitDays = thisOffset - prevOffset;
+    console.log(
+      `Touch ${args.touch} is due ${requiredWaitDays} day(s) after Touch ${args.touch - 1} was sent.\n`
+    );
+  }
+
+  const now = new Date();
+
   // --- render + gate ---------------------------------------------------------
 
   const eligible = [];
@@ -495,7 +582,10 @@ async function main() {
   const skippedNoDetail = [];
   const skippedNotEmail = [];
   const skippedNoAddress = [];
-  const skippedAlreadyDrafted = [];
+  const skippedReplied = [];
+  const skippedTouchAlreadySent = [];
+  const skippedPrevTouchNotSent = [];
+  const skippedTooSoon = [];
   const skippedBadTokens = [];
 
   for (const row of rows) {
@@ -509,14 +599,53 @@ async function main() {
 
     const p = partner.fields;
     const name = p.Name || partner.id;
+    const o = row.fields;
 
-    // GATE 1 — the quality gate.
+    // GATE 1 — THEY REPLIED. Stop. Nothing below this matters.
+    // --force does not override this. There is no version of "they answered
+    // you, so send the follow-up anyway" that is correct.
+    if (o.Replied) {
+      skippedReplied.push(`${name} (replied ${o.Replied})`);
+      continue;
+    }
+
+    // GATE 2 — this touch already went out.
+    const thisTouchSent = o[`Touch ${args.touch} Sent`];
+    if (thisTouchSent && !args.force) {
+      skippedTouchAlreadySent.push(`${name} (sent ${thisTouchSent})`);
+      continue;
+    }
+
+    // GATE 3 — the previous touch has to have been SENT, and long enough ago.
+    if (args.touch > 1) {
+      const prevSentRaw = o[`Touch ${args.touch - 1} Sent`];
+
+      if (!prevSentRaw) {
+        skippedPrevTouchNotSent.push(name);
+        continue;
+      }
+
+      const prevSent = new Date(prevSentRaw);
+      const daysElapsed = Math.floor((now - prevSent) / DAY_MS);
+
+      if (daysElapsed < requiredWaitDays && !args.force) {
+        const dueIn = requiredWaitDays - daysElapsed;
+        skippedTooSoon.push(
+          `${name} (touch ${args.touch - 1} sent ${daysElapsed}d ago; due in ${dueIn}d)`
+        );
+        continue;
+      }
+    }
+
+    // GATE 4 — the quality gate. A blank Specific Detail means nobody has
+    // found one true, sourced thing to say about this business. Skipped rather
+    // than padded with filler. The blank is a feature.
     if (!p["Specific Detail"]) {
       skippedNoDetail.push(name);
       continue;
     }
 
-    // GATE 2 — channel.
+    // GATE 5 — channel.
     if (p["Contact Method"] !== "Email") {
       skippedNotEmail.push(`${name} (${p["Contact Method"] || "no method set"})`);
       continue;
@@ -524,11 +653,6 @@ async function main() {
 
     if (!p.Email) {
       skippedNoAddress.push(name);
-      continue;
-    }
-
-    if (!args.force && (row.fields["Draft Subject"] || row.fields["Draft Body"])) {
-      skippedAlreadyDrafted.push(name);
       continue;
     }
 
@@ -571,6 +695,32 @@ async function main() {
     console.log("");
   };
 
+  // Sequence skips first — on a touch-2 or touch-3 run these are the numbers
+  // that explain the result, and "0 eligible" is usually correct rather than
+  // broken.
+  reportSkips(
+    "REPLIED",
+    skippedReplied,
+    "the sequence ends on a reply. --force does not override this"
+  );
+  reportSkips(
+    `touch ${args.touch} already sent`,
+    skippedTouchAlreadySent,
+    "nothing to do"
+  );
+  reportSkips(
+    `touch ${args.touch - 1} not sent yet`,
+    skippedPrevTouchNotSent,
+    args.touch > 1
+      ? `send touch ${args.touch - 1} and stamp "Touch ${args.touch - 1} Sent" first`
+      : ""
+  );
+  reportSkips(
+    "not due yet",
+    skippedTooSoon,
+    "come back on the date shown, or --force to draft early"
+  );
+
   reportSkips(
     "no Specific Detail",
     skippedNoDetail,
@@ -586,13 +736,22 @@ async function main() {
     skippedNoAddress,
     "data error — fix in Airtable"
   );
-  reportSkips("draft already exists", skippedAlreadyDrafted, "use --force to re-draft");
   reportSkips("no linked Partner", skippedNoPartner, "broken Outreach row");
   reportSkips("UNRESOLVED TOKENS", skippedBadTokens, "template or Event data is incomplete");
 
   console.log(`Eligible for drafting: ${eligible.length}`);
   if (args.limit) console.log(`Processing this run:   ${toProcess.length}`);
   console.log("");
+
+  // Zero eligible on a follow-up run is the normal, healthy state most days.
+  // Say so, rather than leaving a blank screen that reads like a failure.
+  if (eligible.length === 0 && args.touch > 1) {
+    console.log(
+      `Nobody is due for touch ${args.touch} today. That is usually correct —\n` +
+        "the follow-up only opens once the previous touch has actually been sent\n" +
+        "and the waiting period has passed, and it closes the moment they reply.\n"
+    );
+  }
 
   // --- dry run ---------------------------------------------------------------
 
