@@ -60,6 +60,47 @@
  * The Lead's copy names BOTH rooms, so a yes covers both. Do not send a second
  * letter to the other room later. They will remember.
  *
+ * ASK-VARIANT TEMPLATES + THE SECONDARY ASK (added 2026-07-14)
+ * -----------------------------------------------------------
+ * The Touch 1 template used to be a single "leave a card by your register"
+ * letter. But partners have different Best Asks: a wedding florist has no
+ * register (Referral Deal), a community foundation reaches nobody directly
+ * (Introducer), a venue that already programs events wants a Co-hosted Event.
+ * A card-drop letter to any of those is asking for the wrong thing.
+ *
+ * So Touch 1 now selects the template BY THE PARTNER'S ASK. Each email Touch 1
+ * template carries an "Ask" value in the Templates table (Card / Referral Deal /
+ * Co-hosted Event / Newsletter / Social Post / Introducer). The script matches
+ * Partners."Best Ask" to Templates."Ask", falling back to Card.
+ *
+ * IMPORTANT — this replaces the old selection, which matched only on
+ * Channel + Touch + Active and would have grabbed one of several Touch 1
+ * templates non-deterministically. Selection is now per-partner, inside the
+ * loop, keyed on Best Ask.
+ *
+ * BACKWARD-COMPATIBLE: a template with no "Ask" is treated as Card. So with
+ * today's single, Ask-less card template, every partner still resolves to it,
+ * exactly as before. Nothing changes until you populate "Ask" and add variant
+ * templates. Deploy order: ship THIS code first, then add the variants — the
+ * reverse would leave the OLD code choosing between several Touch 1 templates.
+ *
+ * THE {Secondary Ask Line} TOKEN — layering in the second ask
+ * -----------------------------------------------------------
+ * A room with both a counter and a real following gets a card (primary) AND a
+ * post (secondary). Best Ask holds the primary; Partners."Secondary Ask" holds
+ * the second. Rather than build a template for every primary x secondary
+ * combination, the secondary rides in as ONE token, {Secondary Ask Line},
+ * filled from SECONDARY_ASK_LINES below.
+ *
+ * A partner with no Secondary Ask maps to "" and the token vanishes cleanly.
+ * NOTE it is spliced in BEFORE render() runs, because render() deliberately
+ * leaves an empty-valued token literal (so blanks get caught by the
+ * unresolved-token assert). A blank secondary must disappear, not survive.
+ *
+ * TOUCH 2 AND TOUCH 3 ARE ASK-AGNOSTIC. They are short persistence / easy-out
+ * notes with no card-specific language, so one of each serves every ask. They
+ * are still selected by Channel + Touch (there is exactly one of each).
+ *
  * DEPLOY ORDER, IF YOU EVER ADD ANOTHER TOKEN: ship the code BEFORE putting the
  * token into a Template. The unresolved-token assert below will skip every row
  * for a token the code does not supply. That is the assert working, but it will
@@ -232,6 +273,29 @@ const BASE_ID = "appv81raB2A2g9x1Y";
 //   "...researching queer-owned businesses around {City} while I was getting
 //    my own travel practice ready to launch."
 const DEFAULT_CITY_PHRASE = "the Pacific Northwest";
+
+// The {Secondary Ask Line} token. The PRIMARY ask lives in the ask-type
+// template (chosen by Best Ask). The SECONDARY ask rides in here, as one
+// blank-safe sentence keyed off Partners."Secondary Ask".
+//
+// A partner with no Secondary Ask maps to "" and the token vanishes, so a
+// template carrying {Secondary Ask Line} still renders cleanly for everyone.
+// Each value carries a LEADING SPACE so it appends after the primary ask
+// without leaving a double space when it is absent. Place the token with no
+// space in front of it, e.g.:
+//   "...which I plan to do anyway.{Secondary Ask Line} No is a completely fine answer."
+//
+// House style: no em dashes, no semicolons, US spelling.
+const SECONDARY_ASK_LINES = {
+  "Social Post":
+    " And if it ever felt right to share it with your followers, that would be a real bonus, though the card alone is more than enough.",
+  "Co-hosted Event":
+    " And if you ever wanted to host one of these in your own space, I would love that, with no expectation attached.",
+  Newsletter:
+    " Or a single line in your newsletter whenever one is already going out, if that is ever the easier thing.",
+  "Referral Deal":
+    " And if a client of yours is ever dreaming up a trip, I would be honored to be someone you point them to.",
+};
 
 // Immutable table IDs. Never substitute names.
 // tblUO05tbzi65COsl is "Partners (legacy)" — the archive. Deliberately absent.
@@ -445,11 +509,14 @@ async function main() {
       "City", // feeds the {City} token. See DEFAULT_CITY_PHRASE.
       "Cluster", // one human, multiple rooms. See GATE 1.
       "Cluster Lead", // exactly one row per cluster gets the letter.
+      "Best Ask", // selects the Touch 1 template by ask type. Fallback: Card.
+      "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
       "Touch Number",
       "Channel",
+      "Ask", // which ask this template voices. Matched against partner Best Ask.
       "Subject Template",
       "Body Template",
       "Send Offset (Days)", // 0 / 8 / 18 — gates when a follow-up is due
@@ -552,26 +619,51 @@ async function main() {
     process.exit(1);
   }
 
-  // --- resolve the template --------------------------------------------------
+  // --- resolve the template(s) -----------------------------------------------
   //
-  // Matching on Channel AND Touch Number AND Active is deliberate. Without the
-  // Channel filter, a naive lookup by touch number will non-deterministically
-  // grab the Phone or Instagram DM script, which are also Touch 1.
+  // Touch 1 may have SEVERAL active email templates, one per ask type
+  // (Card / Referral Deal / Co-hosted Event / ...), distinguished by the
+  // template's "Ask" field. Touch 2 and Touch 3 are ask-agnostic and have a
+  // single template each. The Channel filter is still deliberate: without it a
+  // lookup by touch number could grab the Phone or Instagram DM script, which
+  // are also Touch 1.
 
-  const template = templates.find(
+  const touchTemplates = templates.filter(
     (t) =>
       t.fields.Channel === "Email" &&
       Number(t.fields["Touch Number"]) === args.touch &&
       t.fields.Active === true
   );
 
-  if (!template) {
+  if (!touchTemplates.length) {
     console.error(
       `No ACTIVE Email template with Touch Number ${args.touch} in the Templates table.`
     );
     process.exit(1);
   }
-  console.log(`Template: ${template.fields["Template Name"]}\n`);
+
+  // Index by Ask. A template with no Ask is treated as the Card default, which
+  // is what keeps this backward-compatible: with today's single, Ask-less card
+  // template, every partner resolves to it exactly as before.
+  const templatesByAsk = new Map();
+  for (const t of touchTemplates) {
+    const ask = String(t.fields.Ask || "Card").trim();
+    if (!templatesByAsk.has(ask)) templatesByAsk.set(ask, t);
+  }
+  const defaultTemplate = templatesByAsk.get("Card") || touchTemplates[0];
+
+  // Touch 1 is chosen by the partner's PRIMARY ask, falling back to Card.
+  // Touch 2 / Touch 3 are ask-agnostic, so every partner gets the one follow-up.
+  const resolveTemplate = (bestAsk) => {
+    if (args.touch !== 1) return defaultTemplate;
+    return templatesByAsk.get(String(bestAsk || "Card").trim()) || defaultTemplate;
+  };
+
+  console.log(
+    args.touch === 1
+      ? `Touch 1 templates available by ask: ${[...templatesByAsk.keys()].join(", ")}\n`
+      : `Template: ${defaultTemplate.fields["Template Name"]}\n`
+  );
 
   const partnersById = new Map(partners.map((p) => [p.id, p]));
   const rows = outreach.filter((o) => (o.fields.Event || []).includes(event.id));
@@ -606,12 +698,18 @@ async function main() {
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   const offsetFor = (touchNumber) => {
-    const t = templates.find(
+    // Prefer the Card template when several email templates share a touch
+    // number (Touch 1 has one per ask). They all carry the same Send Offset,
+    // so any would do, but keeping it deterministic avoids surprises.
+    const candidates = templates.filter(
       (x) =>
         x.fields.Channel === "Email" &&
         Number(x.fields["Touch Number"]) === touchNumber &&
         x.fields.Active === true
     );
+    const t =
+      candidates.find((x) => String(x.fields.Ask || "Card").trim() === "Card") ||
+      candidates[0];
     const raw = t && t.fields["Send Offset (Days)"];
     return Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
@@ -750,6 +848,14 @@ async function main() {
     // sourced detail and a working email address over a missing metadata field.
     if (!p.City) usedCityFallback.push(name);
 
+    // The Secondary Ask line, substituted directly (not via the generic token
+    // renderer). This matters: render() leaves an EMPTY-valued token literal so
+    // it gets caught by the unresolved-token assert. A blank Secondary Ask must
+    // instead disappear cleanly, so it is spliced in here, before render runs.
+    const secondaryAskLine = SECONDARY_ASK_LINES[p["Secondary Ask"]] || "";
+    const spliceSecondary = (str) =>
+      String(str || "").split("{Secondary Ask Line}").join(secondaryAskLine);
+
     const tokens = {
       "Greeting Name": p["Greeting Name"] || "there",
       "Partner Name": p.Name,
@@ -761,8 +867,11 @@ async function main() {
       "Registration URL": event.fields["Registration URL"],
     };
 
-    const subject = render(template.fields["Subject Template"], tokens);
-    const body = render(template.fields["Body Template"], tokens);
+    // Per-partner template, chosen by primary ask (Touch 1). See resolveTemplate.
+    const template = resolveTemplate(p["Best Ask"]);
+
+    const subject = render(spliceSecondary(template.fields["Subject Template"]), tokens);
+    const body = render(spliceSecondary(template.fields["Body Template"]), tokens);
 
     const unresolved = findUnresolvedTokens(subject, body);
     if (unresolved.length) {
