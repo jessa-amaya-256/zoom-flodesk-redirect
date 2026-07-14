@@ -35,6 +35,7 @@ const path = require('path');
 const QRCode = require('qrcode');
 
 const AIRTABLE_API_BASE = 'https://api.airtable.com/v0';
+const BASE_ID = 'appv81raB2A2g9x1Y'; // Not a secret. Only the PAT is.
 const TABLE_ID = 'tblFlH8ssP07XdrhZ'; // Partners — immutable ID, do not swap for the name
 const REDIRECT_BASE = 'https://join.jessicaclark.travel/partner';
 const OUTPUT_DIR = path.join(__dirname, '..', 'output');
