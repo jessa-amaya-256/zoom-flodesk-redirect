@@ -28,9 +28,9 @@ if [ -f .env ]; then
   set +a
 fi
 
-if [ -z "$AIRTABLE_API_KEY" ] || [ -z "$AIRTABLE_BASE_ID" ]; then
-  echo "AIRTABLE_API_KEY or AIRTABLE_BASE_ID isn't set."
-  echo "Add them to a .env file in this repo's root (see .env.example)."
+if [ -z "$AIRTABLE_API_KEY" ]; then
+  echo "AIRTABLE_API_KEY isn't set."
+  echo "Add it to a .env file in this repo's root (see .env.example)."
   exit 1
 fi
 
