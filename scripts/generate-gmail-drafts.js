@@ -30,21 +30,37 @@
  * copy-pasted into generate-mailto-links.js and drifted. Copy now lives in the
  * Templates table so it can be edited without touching code.
  *
+ * THE ACTIVE CYCLE IS AUTO-SELECTED
+ * ----------------------------------
+ * --event is OPTIONAL. When omitted, the cycle is derived from Airtable: the
+ * earliest event whose "Event Start (UTC)" is still in the future. Rollover
+ * happens at the instant the Zoom is scheduled to begin — at 6:00:01pm PT on
+ * Sept 22 the active cycle becomes Virgin Voyages.
+ *
+ * The banner always states which cycle was chosen and whether it was
+ * auto-selected. Read it. Pass --event=<slug> to override, which is what you
+ * want when cleaning up a cycle whose event has already started.
+ *
+ * See scripts/current-event.js for the rule and why it lives in Airtable.
+ *
  * USAGE
  * -----
- *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska
- *       Dry run. Prints every rendered email in full. Creates nothing.
- *       Requires no Gmail credentials at all. ALWAYS RUN THIS FIRST.
+ *   node scripts/generate-gmail-drafts.js
+ *       Dry run on the active cycle. Prints every rendered email in full.
+ *       Creates nothing. Needs no Gmail credentials. ALWAYS RUN THIS FIRST.
  *
- *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create --limit 3
+ *   node scripts/generate-gmail-drafts.js --create --limit 3
  *       Create the first 3 drafts. Do this before a full run.
  *
- *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create
- *       Create all eligible drafts.
+ *   node scripts/generate-gmail-drafts.js --create
+ *       Create all eligible drafts for the active cycle.
  *
- *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --touch=2 --create
+ *   node scripts/generate-gmail-drafts.js --touch=2 --create
  *       Touch 2 (day 8). Touch 3 is day 18. Then stop — a fourth email to a
  *       neighborhood business costs the relationship.
+ *
+ *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create
+ *       Override the auto-selected cycle.
  *
  *   --force   Re-draft partners who already have a Draft Subject/Draft Body.
  *             You will get duplicate Gmail drafts unless you delete the old ones.
@@ -103,6 +119,7 @@ const fs = require("fs");
 const path = require("path");
 const { google } = require("googleapis");
 const { authenticate } = require("@google-cloud/local-auth");
+const { resolveCurrentEvent } = require("./current-event");
 
 // ---- .env loader (plain `node` doesn't read .env on its own) ----------------
 function loadDotEnv() {
@@ -165,15 +182,12 @@ function parseArgs(argv) {
     return flag ? flag.split("=").slice(1).join("=") : undefined;
   };
 
+  // --event is OPTIONAL. When omitted, the active cycle is derived from
+  // Airtable: the earliest event whose "Event Start (UTC)" is still in the
+  // future. Rollover happens at the instant the Zoom is scheduled to begin.
+  // Pass --event explicitly to override — which is what you want when doing
+  // cleanup on a cycle whose event has already started.
   const eventSlug = getEq("event");
-  if (!eventSlug) {
-    console.error(
-      "Missing required flag: --event=<slug>\n" +
-        "  e.g. --event=celebrity-alaska\n" +
-        "  Known slugs: celebrity-alaska, virgin-voyages, crystal-amawaterways, rocky-mountaineer"
-    );
-    process.exit(1);
-  }
 
   const limitIdx = argv.indexOf("--limit");
   const limit =
@@ -339,37 +353,12 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("============================================================");
-  console.log(" Gmail Draft Generator — Partner Outreach");
-  console.log(" Creates reviewable DRAFTS in Gmail. Never sends anything.");
-  console.log("");
-  console.log(` Event: ${args.eventSlug}`);
-  console.log(` Touch: ${args.touch}`);
-  console.log(
-    args.create
-      ? " Mode:  --create (drafts WILL be created in your Gmail)"
-      : " Mode:  DRY RUN (nothing will be created)"
-  );
-  if (!args.create) {
-    console.log("        Add --create to actually create them.");
-    console.log("        Tip: start with --create --limit 3 to test.");
-  }
-  if (args.force) {
-    console.log(" --force: re-drafting partners who ALREADY have a draft");
-    console.log("          (you'll get duplicates unless you delete the old ones)");
-  }
-  if (args.limit) console.log(` Limit: first ${args.limit} eligible partner(s) only`);
-  console.log("");
-  console.log(' NOTE: Draft Subject/Body in Airtable = a draft was made.');
-  console.log("       It does NOT mean the email was sent. Stamp Touch N Sent");
-  console.log("       yourself once you actually hit Send.");
-  console.log("============================================================\n");
-
   console.log("Fetching from Airtable...");
   const [events, partners, templates, outreach] = await Promise.all([
     fetchAll(TABLES.events, [
       "Event Name",
       "Slug",
+      "Event Start (UTC)", // drives auto-selection of the active cycle
       "Portfolio Partner",
       "Event Hook",
       "Event Date (Display)",
@@ -400,14 +389,66 @@ async function main() {
 
   // --- resolve the event -----------------------------------------------------
 
-  const event = events.find((e) => e.fields.Slug === args.eventSlug);
-  if (!event) {
-    console.error(
-      `No Event row with Slug "${args.eventSlug}".\n` +
-        `Known slugs: ${events.map((e) => e.fields.Slug).filter(Boolean).join(", ")}`
-    );
-    process.exit(1);
+  let event;
+  let autoSelected = false;
+
+  if (args.eventSlug) {
+    event = events.find((e) => e.fields.Slug === args.eventSlug);
+    if (!event) {
+      console.error(
+        `No Event row with Slug "${args.eventSlug}".\n` +
+          `Known slugs: ${events.map((e) => e.fields.Slug).filter(Boolean).join(", ")}`
+      );
+      process.exit(1);
+    }
+  } else {
+    try {
+      event = resolveCurrentEvent(events);
+      autoSelected = true;
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
   }
+
+  // Banner AFTER resolution, so the cycle it prints is the cycle it will
+  // actually use. An auto-selected cycle says so, loudly — you should never
+  // have to wonder which cycle a run of --create just drafted into.
+  console.log("");
+  console.log("============================================================");
+  console.log(" Gmail Draft Generator — Partner Outreach");
+  console.log(" Creates reviewable DRAFTS in Gmail. Never sends anything.");
+  console.log("");
+  console.log(` Cycle: ${event.fields["Event Name"]}  [${event.fields.Slug}]`);
+  console.log(
+    autoSelected
+      ? "        ^ AUTO-SELECTED from Airtable (earliest event still in the future)."
+      : "        ^ set explicitly via --event."
+  );
+  if (autoSelected) {
+    console.log(`        Rolls over at ${event.fields["Event Start (UTC)"]}.`);
+  }
+  console.log(` Date:  ${event.fields["Event Date (Display)"]}`);
+  console.log(` Touch: ${args.touch}`);
+  console.log(
+    args.create
+      ? " Mode:  --create (drafts WILL be created in your Gmail)"
+      : " Mode:  DRY RUN (nothing will be created)"
+  );
+  if (!args.create) {
+    console.log("        Add --create to actually create them.");
+    console.log("        Tip: start with --create --limit 3 to test.");
+  }
+  if (args.force) {
+    console.log(" --force: re-drafting partners who ALREADY have a draft");
+    console.log("          (you'll get duplicates unless you delete the old ones)");
+  }
+  if (args.limit) console.log(` Limit: first ${args.limit} eligible partner(s) only`);
+  console.log("");
+  console.log(" NOTE: Draft Subject/Body in Airtable = a draft was made.");
+  console.log("       It does NOT mean the email was sent. Stamp Touch N Sent");
+  console.log("       yourself once you actually hit Send.");
+  console.log("============================================================\n");
 
   const missingEventFields = [
     "Portfolio Partner",
