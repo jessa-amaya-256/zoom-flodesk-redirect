@@ -60,12 +60,13 @@
  *   it. Draft Subject / Draft Body are output, not a gate (treating them as one is
  *   what once made touch 2 skip everybody).
  *
- * GATES (skip loudly): cluster member who is not the Lead (one human, one letter;
- *   the Lead's copy names both rooms); Replied; touch already sent / not yet due;
- *   blank Specific Detail (the quality gate — a blank means no sourced sentence
- *   was found, and skipping beats filler); Contact Method != Email (route to the
- *   Phone / Instagram DM copy); missing address. Plus a HARD ASSERT: if any
- *   {Token} survives rendering, the row is skipped rather than mailed broken.
+ * GATES (skip loudly): handwrite (bespoke letter, auto-draft disabled); cluster
+ *   member who is not the Lead (one human, one letter; the Lead's copy names both
+ *   rooms); Replied; touch already sent / not yet due; blank Specific Detail (the
+ *   quality gate — a blank means no sourced sentence was found, and skipping beats
+ *   filler); Contact Method != Email (route to the Phone / Instagram DM copy);
+ *   missing address. Plus a HARD ASSERT: if any {Token} survives rendering, the
+ *   row is skipped rather than mailed broken.
  *
  * DEPLOY ORDER, whenever you add a token or template: ship the CODE first, then
  *   put the token in a Template. The unresolved-token assert skips any row whose
@@ -383,6 +384,7 @@ async function main() {
       "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
       "Ownership", // fills {Community Phrase}. Verified queer-owned -> pointed opener.
       "Entity Type", // fills {Opener Clause}. Organization -> "corners of", else "businesses around".
+      "Handwrite", // GATE 0: checked = skip auto-drafting entirely; bespoke hand-written letter (see Notes).
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
@@ -609,6 +611,7 @@ async function main() {
 
   const eligible = [];
   const skippedNoPartner = [];
+  const skippedHandwrite = [];
   const skippedClusterMember = [];
   const skippedNoDetail = [];
   const skippedNotEmail = [];
@@ -636,6 +639,19 @@ async function main() {
     const p = partner.fields;
     const name = p.Name || partner.id;
     const o = row.fields;
+
+    // GATE 0 — HANDWRITE. Some partners must never receive an auto-generated
+    // letter. When a business is celebrity-fronted or PR-managed and reached
+    // through a marketing or events manager rather than the owner, the peer
+    // "you kept coming up" template reads as false, and the ask must be
+    // reframed by hand (Kann is the first). A checked Partners."Handwrite"
+    // disables drafting for this row; the bespoke letter lives in Notes and is
+    // sent by hand. --force does NOT override this. Shipping the wrong letter
+    // is never what you meant.
+    if (p.Handwrite) {
+      skippedHandwrite.push(name);
+      continue;
+    }
 
     // GATE 1 — CLUSTERS. One human, multiple rooms, ONE letter.
     //
@@ -797,6 +813,14 @@ async function main() {
     list.forEach((n) => console.log(`  - ${n}`));
     console.log("");
   };
+
+  // Handwrite holds are deliberate, not errors — reported first so nobody
+  // "fixes" a skip that is working as designed.
+  reportSkips(
+    "HANDWRITE — bespoke letter, auto-draft disabled",
+    skippedHandwrite,
+    "on purpose (celebrity / PR-managed rows). Send the hand-written letter saved on the Partner row"
+  );
 
   // The cluster gate first, because it is the one whose absence would be
   // catastrophic and whose presence looks, at a glance, like a bug.
