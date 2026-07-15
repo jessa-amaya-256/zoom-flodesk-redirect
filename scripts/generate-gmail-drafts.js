@@ -1,223 +1,83 @@
 #!/usr/bin/env node
 /**
- * generate-gmail-drafts.js
+ * generate-gmail-drafts.js  —  one reviewable Gmail DRAFT per partner, per cycle.
+ * You open Gmail and hit Send yourself. This script NEVER sends.
  *
- * Creates a real Gmail DRAFT for each partner in one event cycle. You then
- * open Gmail, review each one, and hit Send yourself. This script never sends.
+ * DATA MODEL (all refs are IMMUTABLE table IDs — names are mutable, and the
+ * archive "Partners (legacy)" tblUO05tbzi65COsl is one rename from being the
+ * thing this writes to, so it is deliberately absent):
+ *   Outreach  tblstWlG7RC3R4fRA   one row per Partner x Event (touches live here)
+ *     -> Partner   tblFlH8ssP07XdrhZ   stable business facts
+ *     -> Event     tbl8I56RgDqgXFpQ5   per-cycle facts
+ *   Templates tblwww889pqm5NAGE   copy lives in Airtable, not in this file, so a
+ *                                 new cycle never means editing JavaScript.
  *
- * WHAT CHANGED FROM THE PREVIOUS VERSION — READ THIS
- * ---------------------------------------------------
- * The old version read TABLE_ID "tblUO05tbzi65COsl", commented as "Partners".
- * That is "Partners (legacy)" — the ARCHIVE table. It drafted from the old
- * 92-row roster (including businesses since cut as closed, non-existent, or
- * failing the affluence/density thesis) and stamped "Draft Created" onto
- * archive rows. That was a live footgun and it is now gone.
+ * TOKENS (filled per partner, per cycle):
+ *   {Greeting Name} {Partner Name} {Specific Detail}
+ *   {Event Date} {Event Portfolio} {Event Hook} {Registration URL}
+ *   {City}             <- Partners.City, else DEFAULT_CITY_PHRASE. Not a gate.
+ *   {Community Phrase} <- Partners.Ownership. "Queer-owned (verified)" earns the
+ *                         pointed "queer-owned"; everyone else gets the inclusive
+ *                         "queer-owned and queer-loved". NEVER claim ownership we
+ *                         cannot verify (the Metier / Browsers failure).
+ *   {Opener Clause}    <- Partners.Entity Type. Business (default) -> "researching
+ *                         the <phrase> businesses around <city>"; Organization ->
+ *                         "getting to know the <phrase> corners of <city>", because
+ *                         "businesses" is false for a nonprofit / league / agency.
+ *                         ORTHOGONAL to Best Ask: a queer-owned business acting as
+ *                         an introducer keeps the business opener; an org with a
+ *                         newsletter ask still gets the org opener.
+ *   {Secondary Ask Line} <- Partners.Secondary Ask, via SECONDARY_ASK_LINES.
+ *                         Blank-safe: spliced in BEFORE render() so an empty one
+ *                         vanishes instead of tripping the unresolved-token gate.
  *
- * This version reads the current schema:
+ * TEMPLATE SELECTION: Touch 1 is chosen PER PARTNER by Partners.Best Ask matched
+ *   to Templates.Ask (Card / Referral Deal / Co-hosted Event / Newsletter /
+ *   Social Post / Introducer). A template with no Ask = Card, so it stays
+ *   backward-compatible. Touch 2 and Touch 3 are ask-agnostic (one of each serves
+ *   everyone). The Channel filter is deliberate: without it a touch lookup could
+ *   grab the Phone or Instagram DM script, which are also Touch 1.
  *
- *   Outreach (one row per Partner x Event)   tblstWlG7RC3R4fRA
- *     -> Partner   (stable facts)            tblFlH8ssP07XdrhZ
- *     -> Event     (per-cycle facts)         tbl8I56RgDqgXFpQ5
- *     + Templates  (copy lives in Airtable)  tblwww889pqm5NAGE
+ * CYCLE: --event is optional. Omitted, the active cycle is the earliest event
+ *   whose "Event Start (UTC)" is still in the future (rolls over at showtime).
+ *   The banner always states which cycle was chosen. Pass --event=<slug> to
+ *   override, which is what you want when cleaning up a cycle already begun.
  *
- * All table references are by IMMUTABLE TABLE ID, never by name. Names are
- * mutable, and there is an archive table one rename away from being the thing
- * this script writes to. That is exactly the mistake being fixed here.
+ * USAGE:
+ *   node scripts/generate-gmail-drafts.js                     dry run, prints every email
+ *   node scripts/generate-gmail-drafts.js --create --limit 3  create the first 3
+ *   node scripts/generate-gmail-drafts.js --create            create all eligible
+ *   node scripts/generate-gmail-drafts.js --touch=2 --create  day-8 follow-up (touch 3 = day 18, then STOP)
+ *   --event=<slug>  override the auto-selected cycle
+ *   --force         re-draft a sent touch, or draft a follow-up early. Does NOT
+ *                   override the Replied gate or the Cluster gate. Nothing does.
  *
- * The email body no longer lives in this file. The old buildBody() hardcoded
- * "Tuesday, September 22nd with Celebrity Cruises", which meant every new
- * cycle required editing JavaScript — and the same template had already been
- * copy-pasted into generate-mailto-links.js and drifted. Copy now lives in the
- * Templates table so it can be edited without touching code.
+ * A TOUCH IS DUE only if: they have not Replied; "Touch N Sent" is blank; "Touch
+ *   N-1 Sent" is filled; and enough days have passed since it was SENT. The wait
+ *   comes from Templates."Send Offset (Days)" (0 / 8 / 18). Zero-eligible on a
+ *   follow-up run is the normal, healthy state. You stamp "Touch N Sent" and
+ *   "Replied" BY HAND — the script cannot know whether you sent a draft or deleted
+ *   it. Draft Subject / Draft Body are output, not a gate (treating them as one is
+ *   what once made touch 2 skip everybody).
  *
- * THE {City} TOKEN (added 2026-07-14)
- * ------------------------------------
- * The Touch 1 body used to hardcode "around Seattle and Portland". The partner
- * roster now includes Bellingham, Olympia, Snohomish County, Vancouver WA and
- * more. To a partner in any of those, that line named two cities they are not
- * in and then claimed they "kept coming up" — undercutting the one paragraph
- * whose entire job is proving the email is not a blast.
+ * GATES (skip loudly): cluster member who is not the Lead (one human, one letter;
+ *   the Lead's copy names both rooms); Replied; touch already sent / not yet due;
+ *   blank Specific Detail (the quality gate — a blank means no sourced sentence
+ *   was found, and skipping beats filler); Contact Method != Email (route to the
+ *   Phone / Instagram DM copy); missing address. Plus a HARD ASSERT: if any
+ *   {Token} survives rendering, the row is skipped rather than mailed broken.
  *
- * {City} now resolves from Partners."City". See DEFAULT_CITY_PHRASE below for
- * why a blank City degrades gracefully instead of skipping the row.
+ * DEPLOY ORDER, whenever you add a token or template: ship the CODE first, then
+ *   put the token in a Template. The unresolved-token assert skips any row whose
+ *   template holds a token the code does not yet supply — safe, but it stalls a
+ *   cycle until the code catches up.
  *
- * THE CLUSTER GATE (added 2026-07-14)
- * ------------------------------------
- * Airtable holds one row per BUSINESS. Some people own more than one.
- *
- *   Osbaldo Hernandez & Dennis Ramey  ->  El Sueñito Brewing + Frelard Tamales
- *   Jody Hall                         ->  Cupcake Royale + Wunderground Coffee
- *   Nat Stratton-Clarke               ->  Cafe Flora + Floret
- *
- * One row per business means one draft per business, which means the SAME
- * PERSON opens two cold emails on the same morning. That is the fastest way in
- * existence to be read as a mail merge, and it destroys the exact thing the
- * Specific Detail is built to prove.
- *
- * So: Partners."Cluster" names the owner. Partners."Cluster Lead" marks the ONE
- * row that gets the letter. Everyone else in the cluster is skipped, loudly.
- *
- * The Lead's copy names BOTH rooms, so a yes covers both. Do not send a second
- * letter to the other room later. They will remember.
- *
- * ASK-VARIANT TEMPLATES + THE SECONDARY ASK (added 2026-07-14)
- * -----------------------------------------------------------
- * The Touch 1 template used to be a single "leave a card by your register"
- * letter. But partners have different Best Asks: a wedding florist has no
- * register (Referral Deal), a community foundation reaches nobody directly
- * (Introducer), a venue that already programs events wants a Co-hosted Event.
- * A card-drop letter to any of those is asking for the wrong thing.
- *
- * So Touch 1 now selects the template BY THE PARTNER'S ASK. Each email Touch 1
- * template carries an "Ask" value in the Templates table (Card / Referral Deal /
- * Co-hosted Event / Newsletter / Social Post / Introducer). The script matches
- * Partners."Best Ask" to Templates."Ask", falling back to Card.
- *
- * IMPORTANT — this replaces the old selection, which matched only on
- * Channel + Touch + Active and would have grabbed one of several Touch 1
- * templates non-deterministically. Selection is now per-partner, inside the
- * loop, keyed on Best Ask.
- *
- * BACKWARD-COMPATIBLE: a template with no "Ask" is treated as Card. So with
- * today's single, Ask-less card template, every partner still resolves to it,
- * exactly as before. Nothing changes until you populate "Ask" and add variant
- * templates. Deploy order: ship THIS code first, then add the variants — the
- * reverse would leave the OLD code choosing between several Touch 1 templates.
- *
- * THE {Secondary Ask Line} TOKEN — layering in the second ask
- * -----------------------------------------------------------
- * A room with both a counter and a real following gets a card (primary) AND a
- * post (secondary). Best Ask holds the primary; Partners."Secondary Ask" holds
- * the second. Rather than build a template for every primary x secondary
- * combination, the secondary rides in as ONE token, {Secondary Ask Line},
- * filled from SECONDARY_ASK_LINES below.
- *
- * A partner with no Secondary Ask maps to "" and the token vanishes cleanly.
- * NOTE it is spliced in BEFORE render() runs, because render() deliberately
- * leaves an empty-valued token literal (so blanks get caught by the
- * unresolved-token assert). A blank secondary must disappear, not survive.
- *
- * TOUCH 2 AND TOUCH 3 ARE ASK-AGNOSTIC. They are short persistence / easy-out
- * notes with no card-specific language, so one of each serves every ask. They
- * are still selected by Channel + Touch (there is exactly one of each).
- *
- * DEPLOY ORDER, IF YOU EVER ADD ANOTHER TOKEN: ship the code BEFORE putting the
- * token into a Template. The unresolved-token assert below will skip every row
- * for a token the code does not supply. That is the assert working, but it will
- * stall a cycle while you work out why.
- *
- * THE ACTIVE CYCLE IS AUTO-SELECTED
- * ----------------------------------
- * --event is OPTIONAL. When omitted, the cycle is derived from Airtable: the
- * earliest event whose "Event Start (UTC)" is still in the future. Rollover
- * happens at the instant the Zoom is scheduled to begin — at 6:00:01pm PT on
- * Sept 22 the active cycle becomes Virgin Voyages.
- *
- * The banner always states which cycle was chosen and whether it was
- * auto-selected. Read it. Pass --event=<slug> to override, which is what you
- * want when cleaning up a cycle whose event has already started.
- *
- * See scripts/current-event.js for the rule and why it lives in Airtable.
- *
- * USAGE
- * -----
- *   node scripts/generate-gmail-drafts.js
- *       Dry run on the active cycle. Prints every rendered email in full.
- *       Creates nothing. Needs no Gmail credentials. ALWAYS RUN THIS FIRST.
- *
- *   node scripts/generate-gmail-drafts.js --create --limit 3
- *       Create the first 3 drafts. Do this before a full run.
- *
- *   node scripts/generate-gmail-drafts.js --create
- *       Create all eligible drafts for the active cycle.
- *
- *   node scripts/generate-gmail-drafts.js --touch=2 --create
- *       Touch 2 (day 8). Touch 3 is day 18. Then stop — a fourth email to a
- *       neighborhood business costs the relationship.
- *
- *   node scripts/generate-gmail-drafts.js --event=celebrity-alaska --create
- *       Override the auto-selected cycle.
- *
- *   --force   Draft anyway for people the sequence rules would skip: re-draft a
- *             touch already sent, or draft a follow-up before it is due. You
- *             will get duplicate Gmail drafts unless you delete the old ones.
- *             --force does NOT override the Replied gate. Nothing does.
- *             --force does NOT override the Cluster gate either. Sending two
- *             cold emails to one person is never what you meant to do.
- *
- * WHEN IS A TOUCH DUE? — the sequence rules
- * ------------------------------------------
- * A partner gets touch N drafted only if ALL of these hold:
- *
- *   - They have not replied.  A reply ends the sequence. Full stop.
- *   - "Touch N Sent" is blank. You haven't already sent this one.
- *   - "Touch N-1 Sent" is filled. You cannot follow up on an email that never
- *     went out — a draft sitting unsent in Gmail is not a sent email.
- *   - Enough days have passed since touch N-1 was SENT (not drafted). The
- *     interval comes from Templates."Send Offset (Days)" — 0 / 8 / 18.
- *
- * So on most days, `draft-touch2` correctly drafts nothing, and says so.
- * Zero eligible is the healthy state, not a failure.
- *
- * TRACKING — three states, deliberately kept separate
- * ----------------------------------------------------
- * Outreach."Touch 1/2/3 Sent"  (written by YOU, by hand)
- *     = you actually clicked Send in Gmail. This is what gates the sequence.
- *       The script cannot know whether you sent a draft or deleted it, so it
- *       will not guess. If you don't stamp these, follow-ups never open.
- *
- * Outreach."Replied"  (written by YOU, by hand)
- *     = they answered. Stamp it and the sequence stops for that partner,
- *       immediately and permanently.
- *
- * Outreach."Draft Subject" / "Draft Body"  (written by THIS script)
- *     = a PREVIEW of the most recent render. Overwritten on each touch.
- *       NOT a gate — an earlier version used these to decide who to skip,
- *       which meant touch 2 skipped everyone, because touch 1 had filled them
- *       in. That was a bug. They are output, not state.
- *
- * Partners."Status"  (written by YOU; ALSO READ BY generate-qr-codes.js)
- *     = the relationship state. 'Confirmed' -> 'QR Generated' drives the QR
- *       script. DO NOT REPURPOSE THIS FIELD.
- *
- * THE THREE GATES
- * ---------------
- * 1. Cluster member who is not the Lead -> SKIP. One human, one letter.
- *
- * 2. Empty "Specific Detail" -> SKIP. That blank means nobody has found one
- *    true, sourced sentence about this business. The row is skipped rather than
- *    padded with a generic line. The blank is a feature. Do not "fix" it by
- *    defaulting to filler.
- *
- * 3. "Contact Method" != Email -> SKIP. Many partners are DM / phone /
- *    in-person only. Route those to the Phone and Instagram DM scripts in the
- *    Templates table.
- *
- * Plus a hard assert: if any {Token} survives rendering, the row is skipped
- * loudly. A body reading "Hi there, ... {Event Hook} ..." landing in a
- * partner's inbox costs the relationship, not just the send.
- *
- * ONE-TIME SETUP (unchanged — your existing credentials.json/token.json work)
- * ---------------------------------------------------------------------------
- * 1. npm install googleapis @google-cloud/local-auth
- * 2. Enable the Gmail API:
- *      https://console.cloud.google.com/apis/enableflow?apiid=gmail.googleapis.com
- * 3. OAuth consent screen: App name anything, Audience = Internal.
- * 4. Credentials > Create Client > Desktop app. Save JSON to repo root as
- *    credentials.json
- * 5. .gitignore BOTH credentials.json and token.json. They are secrets.
- * 6. First run opens a browser to authorize, then saves token.json.
- *
- * Also required, in .env at the repo root:
- *      AIRTABLE_API_KEY=pat_...
- *
- * That is the ONLY thing .env needs. The {Registration URL} token comes from
- * the "Registration URL" field on the Events table — per-cycle, alongside the
- * hook and the date it belongs to. It was briefly a REGISTRATION_URL env var,
- * which was wrong: an env var is a per-MACHINE value for a per-CYCLE fact, so
- * forgetting to hand-edit it in October would have rendered the Celebrity link
- * into every Virgin Voyages email, silently. Now an unpopulated cycle simply
- * refuses to draft.
+ * SETUP (one time): npm install googleapis @google-cloud/local-auth; enable the
+ *   Gmail API; OAuth desktop client saved as credentials.json (gitignored); first
+ *   run authorizes and writes token.json (gitignored). Scope is gmail.compose, NOT
+ *   gmail.send — this script cannot send mail, by design. .env needs exactly
+ *   AIRTABLE_API_KEY. The RSVP link is per-cycle on the Events table, not an env
+ *   var, so an unpopulated cycle refuses to draft rather than render the wrong link.
  */
 
 const fs = require("fs");
@@ -522,6 +382,7 @@ async function main() {
       "Best Ask", // selects the Touch 1 template by ask type. Fallback: Card.
       "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
       "Ownership", // fills {Community Phrase}. Verified queer-owned -> pointed opener.
+      "Entity Type", // fills {Opener Clause}. Organization -> "corners of", else "businesses around".
     ]),
     fetchAll(TABLES.templates, [
       "Template Name",
@@ -867,17 +728,42 @@ async function main() {
     const spliceSecondary = (str) =>
       String(str || "").split("{Secondary Ask Line}").join(secondaryAskLine);
 
+    const communityPhrase =
+      COMMUNITY_PHRASE_BY_OWNERSHIP[p["Ownership"]] || DEFAULT_COMMUNITY_PHRASE;
+    const cityPhrase = p.City || DEFAULT_CITY_PHRASE;
+
+    // {Opener Clause} — the entity-aware first clause of the opener sentence.
+    //
+    //   Business (default):  "researching the <phrase> businesses around <city>"
+    //   Organization:        "getting to know the <phrase> corners of <city>"
+    //
+    // An Organization (nonprofit, league, congregation, community center,
+    // chapter, public agency) must not be called a "business" in the very
+    // sentence whose job is proving the email is not a blast. Driven by
+    // Partners."Entity Type", which defaults to Business when blank.
+    //
+    // This is ORTHOGONAL to Best Ask, and that is the point: a queer-owned
+    // business acting as an introducer (BAX) keeps the business opener, and an
+    // organization whose ask is a newsletter mention (Seattle Choruses, Emerald
+    // City Softball) still gets the org opener. Ask type alone could not tell
+    // those apart, which is exactly the edge case this token closes.
+    const isOrganization =
+      String(p["Entity Type"] || "").trim() === "Organization";
+    const openerClause = isOrganization
+      ? `getting to know the ${communityPhrase} corners of ${cityPhrase}`
+      : `researching the ${communityPhrase} businesses around ${cityPhrase}`;
+
     const tokens = {
       "Greeting Name": p["Greeting Name"] || "there",
       "Partner Name": p.Name,
       "Specific Detail": p["Specific Detail"],
-      City: p.City || DEFAULT_CITY_PHRASE,
+      City: cityPhrase,
       "Event Date": event.fields["Event Date (Display)"],
       "Event Portfolio": event.fields["Portfolio Partner"],
       "Event Hook": event.fields["Event Hook"],
       "Registration URL": event.fields["Registration URL"],
-      "Community Phrase":
-        COMMUNITY_PHRASE_BY_OWNERSHIP[p["Ownership"]] || DEFAULT_COMMUNITY_PHRASE,
+      "Community Phrase": communityPhrase,
+      "Opener Clause": openerClause,
     };
 
     // Per-partner template, chosen by primary ask (Touch 1). See resolveTemplate.
