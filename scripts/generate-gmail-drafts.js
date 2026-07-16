@@ -11,32 +11,75 @@
  *     -> Event     tbl8I56RgDqgXFpQ5   per-cycle facts
  *   Templates tblwww889pqm5NAGE   copy lives in Airtable, not in this file, so a
  *                                 new cycle never means editing JavaScript.
+ *   Opener & Identity Lines  tblW1KErf9l3Ku9MX   the entity/ownership-aware opener clause,
+ *                                 keyed by Ownership, holding a nested {City}. Also
+ *                                 holds the warm Identity Line, keyed the same way.
+ *   Ask Snippets tblhCsZ7X9SDdUWcq  the full warm ask sentence, keyed by Best
+ *                                 Ask. The "Assembled Example" IS the sentence.
  *
- * TOKENS (filled per partner, per cycle):
+ * COLD vs WARM. Touch 1 comes in two registers, chosen PER PARTNER by the Lead
+ * Type of the template the partner is linked to (Partners."Target Template" ->
+ * Templates."Lead Type"). A partner with no link, or a link to a Cold template,
+ * takes the COLD path. A link to a Warm template takes the WARM path. Everything
+ * on Touch 2 / Touch 3 is a single ask-agnostic follow-up and always cold-shaped.
+ *
+ * TOKENS — COLD (the "you kept coming up" cold open):
  *   {Greeting Name} {Partner Name} {Specific Detail}
  *   {Event Date} {Event Portfolio} {Event Hook} {Registration URL}
- *   {City}             <- Partners.City, else DEFAULT_CITY_PHRASE. Not a gate.
- *   {Community Phrase} <- Partners.Ownership. "Queer-owned (verified)" earns the
- *                         pointed "queer-owned"; everyone else gets the inclusive
- *                         "queer-owned and queer-loved". NEVER claim ownership we
- *                         cannot verify (the Metier / Browsers failure).
- *   {Opener Clause}    <- Partners.Entity Type. Business (default) -> "researching
- *                         the <phrase> businesses around <city>"; Organization ->
- *                         "getting to know the <phrase> corners of <city>", because
- *                         "businesses" is false for a nonprofit / league / agency.
- *                         ORTHOGONAL to Best Ask: a queer-owned business acting as
- *                         an introducer keeps the business opener; an org with a
- *                         newsletter ask still gets the org opener.
+ *   {City}          <- Partners.City, else DEFAULT_CITY_PHRASE. Not a gate.
+ *   {Opener Clause} <- Opener & Identity Lines, keyed by Partners.Ownership, fallback to the
+ *                      "Unverified" row. The clause TEXT lives in Airtable now, not
+ *                      in this file, and it CONTAINS a nested {City}, so the body is
+ *                      rendered until no {tokens} remain (see renderDeep). "Queer-
+ *                      owned (verified)" earns the pointed "queer-owned"; everyone
+ *                      else gets the inclusive "queer-owned and queer-friendly".
+ *                      NEVER claim ownership we cannot verify (Metier / Browsers).
+ *                      ALSO entity-aware, via Partners.Entity Type: a Business (the
+ *                      blank default) gets "researching the ... businesses around
+ *                      {City}", an Organization gets "getting to know the ...
+ *                      corners of {City}" (the "Opener Clause (Org)" column), so a
+ *                      nonprofit is never called a business (the 9.9 error).
  *   {Secondary Ask Line} <- Partners.Secondary Ask, via SECONDARY_ASK_LINES.
- *                         Blank-safe: spliced in BEFORE render() so an empty one
- *                         vanishes instead of tripping the unresolved-token gate.
+ *                      Blank-safe: spliced in BEFORE render() so an empty one
+ *                      vanishes instead of tripping the unresolved-token gate.
+ *   {Cold Ask Block} <- Ask Snippets."Cold Ask Block", keyed by Best Ask.
+ *                      The WHOLE ask paragraph. This is what lets one "favor"
+ *                      template serve Card / Newsletter / Social Post / Co-hosted
+ *                      Event instead of four near-identical templates. Referral
+ *                      Deal and Introducer keep their own full templates (their
+ *                      letter is structurally different) and do not use this.
+ *                      Unknown or blank ask falls back to the Card block.
+ *   {Cold Ask Closer} <- Ask Snippets."Cold Ask Closer", keyed by Best Ask.
+ *                      An optional trailing line after the close. Only the Card
+ *                      ask sets one ("Coffee on me either way."). Blank-safe
+ *                      (spliced), so it vanishes for every other ask.
  *
- * TEMPLATE SELECTION: Touch 1 is chosen PER PARTNER by Partners.Best Ask matched
- *   to Templates.Ask (Card / Referral Deal / Co-hosted Event / Newsletter /
+ * TOKENS — WARM (the "really glad we got to talk" note to someone already met):
+ *   {Greeting Name} <- Partners.Greeting Name.
+ *   {Meeting Context} <- Partners.Meeting Context. The author bakes in the
+ *                      preposition ("in your chair", "at the July SNW meeting").
+ *   {Callback}      <- Partners.Callback. Optional, blank-safe (spliced).
+ *   {Memory Jog}    <- COMPUTED from Partners."Last Interaction", falling back to
+ *                      Partners.Met Date when that is blank. Empty if the most
+ *                      recent contact was today or yesterday, else "Just to jog
+ *                      your memory, " (the trailing comma+space is intentional).
+ *                      Met Date is the FIRST meeting; Last Interaction is the most
+ *                      recent one, and recency is what decides whether a reminder
+ *                      is needed. Blank-safe (spliced).
+ *   {Identity Line} <- Opener & Identity Lines.Identity Line, keyed by Partners.Ownership,
+ *                      fallback "Unverified". The word "too" claims shared queer
+ *                      identity, so it rides ONLY on the verified row.
+ *   {Ask Sentence}  <- Ask Snippets."Assembled Example", keyed by Partners.
+ *                      Best Ask. No match = the partner is skipped LOUDLY rather
+ *                      than mailed a half-rendered body.
+ *
+ * TEMPLATE SELECTION: Touch 1 COLD is chosen PER PARTNER by Partners.Best Ask
+ *   matched to Templates.Ask (Card / Referral Deal / Co-hosted Event / Newsletter /
  *   Social Post / Introducer). A template with no Ask = Card, so it stays
- *   backward-compatible. Touch 2 and Touch 3 are ask-agnostic (one of each serves
- *   everyone). The Channel filter is deliberate: without it a touch lookup could
- *   grab the Phone or Instagram DM script, which are also Touch 1.
+ *   backward-compatible. Touch 1 WARM is the single Lead Type = Warm template.
+ *   Touch 2 and Touch 3 are ask-agnostic (one of each serves everyone). The
+ *   Channel filter is deliberate: without it a touch lookup could grab the Phone
+ *   or Instagram DM script, which are also Touch 1.
  *
  * CYCLE: --event is optional. Omitted, the active cycle is the earliest event
  *   whose "Event Start (UTC)" is still in the future (rolls over at showtime).
@@ -63,10 +106,10 @@
  * GATES (skip loudly): handwrite (bespoke letter, auto-draft disabled); cluster
  *   member who is not the Lead (one human, one letter; the Lead's copy names both
  *   rooms); Replied; touch already sent / not yet due; blank Specific Detail (the
- *   quality gate — a blank means no sourced sentence was found, and skipping beats
- *   filler); Contact Method != Email (route to the Phone / Instagram DM copy);
- *   missing address. Plus a HARD ASSERT: if any {Token} survives rendering, the
- *   row is skipped rather than mailed broken.
+ *   quality gate — COLD ONLY, a warm note does not use it); Contact Method != Email
+ *   (route to the Phone / Instagram DM copy); missing address; a warm partner with
+ *   no matching Ask Snippet. Plus a HARD ASSERT: if any {Token} survives
+ *   rendering, the row is skipped rather than mailed broken.
  *
  * DEPLOY ORDER, whenever you add a token or template: ship the CODE first, then
  *   put the token in a Template. The unresolved-token assert skips any row whose
@@ -125,7 +168,7 @@ const BASE_ID = "appv81raB2A2g9x1Y";
 // Detail means nobody found one true thing to say about the business, and
 // skipping that row is the entire point of the gate. A blank City is just a
 // missing metadata field, and the sentence stays true without it:
-// "researching queer-owned businesses around the Pacific Northwest" is
+// "researching queer-owned businesses around the Puget Sound area" is
 // accurate for every partner in this base.
 //
 // So a missing City degrades gracefully rather than killing an otherwise good
@@ -133,7 +176,7 @@ const BASE_ID = "appv81raB2A2g9x1Y";
 //
 //   "...researching queer-owned businesses around {City} while I was getting
 //    my own travel practice ready to launch."
-const DEFAULT_CITY_PHRASE = "the Pacific Northwest";
+const DEFAULT_CITY_PHRASE = "the Puget Sound area";
 
 // The {Secondary Ask Line} token. The PRIMARY ask lives in the ask-type
 // template (chosen by Best Ask). The SECONDARY ask rides in here, as one
@@ -158,16 +201,6 @@ const SECONDARY_ASK_LINES = {
     " And if a client of yours is ever dreaming up a trip, I would be honored to be someone you point them to.",
 };
 
-// The {Community Phrase} token — Option B. The opener says either "queer-owned"
-// (recognition, for a business VERIFIED queer-owned from its own words) or
-// "queer-owned and queer-loved" (true for an ally, or a row not yet verified).
-// Never claim ownership we cannot verify: that is the Metier / Browsers failure
-// in Appendix A. Only "Queer-owned (verified)" earns the pointed phrase.
-const COMMUNITY_PHRASE_BY_OWNERSHIP = {
-  "Queer-owned (verified)": "queer-owned",
-};
-const DEFAULT_COMMUNITY_PHRASE = "queer-owned and queer-loved";
-
 // Immutable table IDs. Never substitute names.
 // tblUO05tbzi65COsl is "Partners (legacy)" — the archive. Deliberately absent.
 const TABLES = {
@@ -175,6 +208,8 @@ const TABLES = {
   partners: "tblFlH8ssP07XdrhZ",
   outreach: "tblstWlG7RC3R4fRA",
   templates: "tblwww889pqm5NAGE",
+  openerClauses: "tblW1KErf9l3Ku9MX",
+  warmAskSnippets: "tblhCsZ7X9SDdUWcq",
 };
 
 const apiRoot = (tableId) => `https://api.airtable.com/v0/${BASE_ID}/${tableId}`;
@@ -275,12 +310,47 @@ function render(template, tokens) {
   });
 }
 
+// render() only makes ONE pass, and String.replace does not re-scan the text it
+// just substituted. That matters because {Opener Clause} resolves to a string
+// that itself contains {City}. renderDeep runs render until the output stops
+// changing (or a small cap is hit), so a token nested inside another token's
+// value still gets resolved. A token whose value is missing stays literal and is
+// left for the unresolved-token assert to catch, exactly as before.
+function renderDeep(template, tokens) {
+  let prev = String(template || "");
+  for (let i = 0; i < 6; i++) {
+    const next = render(prev, tokens);
+    if (next === prev) break;
+    prev = next;
+  }
+  return prev;
+}
+
 function findUnresolvedTokens(...rendered) {
   const found = new Set();
   for (const text of rendered) {
     for (const m of text.matchAll(/\{[^}]+\}/g)) found.add(m[0]);
   }
   return [...found];
+}
+
+// The {Memory Jog} token for the WARM path. Recency of the MOST RECENT contact
+// is what decides this, so the caller passes Last Interaction and falls back to
+// Met Date. A contact from today or yesterday needs no reminder, so the jog is
+// empty. Anything older opens with a gentle "Just to jog your memory, ". The
+// trailing comma+space is intentional: the token sits directly in front of
+// {Identity Line} with no separator of its own. A blank date is treated as "not
+// recent" and gets the jog, because we cannot prove the contact was fresh.
+function computeMemoryJog(lastContactRaw) {
+  if (!lastContactRaw) return "Just to jog your memory, ";
+  const two = (n) => String(n).padStart(2, "0");
+  const ymd = (d) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const when = String(lastContactRaw).slice(0, 10);
+  if (when === ymd(today) || when === ymd(yesterday)) return "";
+  return "Just to jog your memory, ";
 }
 
 // ---------------------------------------------------------------------------
@@ -361,54 +431,117 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   console.log("Fetching from Airtable...");
-  const [events, partners, templates, outreach] = await Promise.all([
-    fetchAll(TABLES.events, [
-      "Event Name",
-      "Slug",
-      "Event Start (UTC)", // drives auto-selection of the active cycle
-      "Portfolio Partner",
-      "Event Hook",
-      "Event Date (Display)",
-      "Registration URL",
-    ]),
-    fetchAll(TABLES.partners, [
-      "Name",
-      "Email",
-      "Contact Method",
-      "Greeting Name",
-      "Specific Detail",
-      "City", // feeds the {City} token. See DEFAULT_CITY_PHRASE.
-      "Cluster", // one human, multiple rooms. See GATE 1.
-      "Cluster Lead", // exactly one row per cluster gets the letter.
-      "Best Ask", // selects the Touch 1 template by ask type. Fallback: Card.
-      "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
-      "Ownership", // fills {Community Phrase}. Verified queer-owned -> pointed opener.
-      "Entity Type", // fills {Opener Clause}. Organization -> "corners of", else "businesses around".
-      "Handwrite", // GATE 0: checked = skip auto-drafting entirely; bespoke hand-written letter (see Notes).
-    ]),
-    fetchAll(TABLES.templates, [
-      "Template Name",
-      "Touch Number",
-      "Channel",
-      "Ask", // which ask this template voices. Matched against partner Best Ask.
-      "Subject Template",
-      "Body Template",
-      "Send Offset (Days)", // 0 / 8 / 18 — gates when a follow-up is due
-      "Active",
-    ]),
-    fetchAll(TABLES.outreach, [
-      "Outreach",
-      "Partner",
-      "Event",
-      "Stage",
-      "Touch 1 Sent",
-      "Touch 2 Sent",
-      "Touch 3 Sent",
-      "Replied",
-      "Draft Subject",
-      "Draft Body",
-    ]),
-  ]);
+  const [events, partners, templates, outreach, openerClauses, warmAskSnippets] =
+    await Promise.all([
+      fetchAll(TABLES.events, [
+        "Event Name",
+        "Slug",
+        "Event Start (UTC)", // drives auto-selection of the active cycle
+        "Portfolio Partner",
+        "Event Hook",
+        "Event Date (Display)",
+        "Registration URL",
+      ]),
+      fetchAll(TABLES.partners, [
+        "Name",
+        "Email",
+        "Contact Method",
+        "Greeting Name",
+        "Specific Detail",
+        "City", // feeds the {City} token. See DEFAULT_CITY_PHRASE.
+        "Cluster", // one human, multiple rooms. See GATE 1.
+        "Cluster Lead", // exactly one row per cluster gets the letter.
+        "Best Ask", // selects the cold Touch 1 template AND the warm ask sentence.
+        "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
+        "Ownership", // keys {Opener Clause} and warm {Identity Line}.
+        "Entity Type", // Business (default) vs Organization -> picks the opener variant.
+        "Target Template", // -> its Lead Type routes the partner cold vs warm.
+        "Meeting Context", // warm {Meeting Context}. Preposition baked in.
+        "Met Date", // FIRST meeting. Fallback source for {Memory Jog}.
+        "Last Interaction", // most recent contact. Primary source for {Memory Jog}.
+        "Callback", // warm {Callback}. Optional, blank-safe.
+        "Handwrite", // GATE 0: checked = skip auto-drafting entirely; bespoke hand-written letter (see Notes).
+      ]),
+      fetchAll(TABLES.templates, [
+        "Template Name",
+        "Touch Number",
+        "Channel",
+        "Ask", // which ask this template voices. Matched against partner Best Ask.
+        "Lead Type", // Cold / Warm. Routes each partner to a cold or warm render.
+        "Subject Template",
+        "Body Template",
+        "Send Offset (Days)", // 0 / 8 / 18 — gates when a follow-up is due
+        "Active",
+      ]),
+      fetchAll(TABLES.outreach, [
+        "Outreach",
+        "Partner",
+        "Event",
+        "Stage",
+        "Touch 1 Sent",
+        "Touch 2 Sent",
+        "Touch 3 Sent",
+        "Replied",
+        "Draft Subject",
+        "Draft Body",
+      ]),
+      fetchAll(TABLES.openerClauses, [
+        "Ownership", // key
+        "Opener Clause", // cold opener, BUSINESS variant, contains a nested {City}
+        "Opener Clause (Org)", // cold opener, ORGANIZATION variant ("corners of", not "businesses")
+        "Identity Line", // warm identity sentence
+      ]),
+      fetchAll(TABLES.warmAskSnippets, [
+        "Best Ask", // key
+        "Assembled Example", // the full warm ask sentence
+        "Cold Ask Block", // the full cold ask paragraph, for the consolidated cold favor template
+        "Cold Ask Closer", // optional trailing line after the cold close (only Card uses it)
+      ]),
+    ]);
+
+  // --- fragment lookups ------------------------------------------------------
+  //
+  // The opener clause and the warm identity line are BOTH keyed by Ownership and
+  // BOTH live on the Opener & Identity Lines table. The warm ask sentence is keyed by
+  // Best Ask on the Ask Snippets table. Loading them into plain maps keeps
+  // all outward-facing prose in Airtable — this file writes none of it.
+
+  const openerClauseByOwnership = {}; // BUSINESS variant, keyed by Ownership
+  const openerClauseOrgByOwnership = {}; // ORGANIZATION variant, keyed by Ownership
+  const identityLineByOwnership = {};
+  for (const r of openerClauses) {
+    const key = String(r.fields["Ownership"] || "").trim();
+    if (!key) continue;
+    if (r.fields["Opener Clause"]) openerClauseByOwnership[key] = r.fields["Opener Clause"];
+    if (r.fields["Opener Clause (Org)"]) openerClauseOrgByOwnership[key] = r.fields["Opener Clause (Org)"];
+    if (r.fields["Identity Line"]) identityLineByOwnership[key] = r.fields["Identity Line"];
+  }
+
+  const askSentenceByAsk = {};
+  const coldAskByAsk = {};
+  for (const r of warmAskSnippets) {
+    const key = String(r.fields["Best Ask"] || "").trim();
+    if (!key) continue;
+    if (r.fields["Assembled Example"]) {
+      askSentenceByAsk[key] = r.fields["Assembled Example"];
+    }
+    // The consolidated cold favor template (Card / Newsletter / Social Post /
+    // Co-hosted Event) pulls its whole ask paragraph from here, keyed by Best
+    // Ask, plus an optional closing line. Referral Deal and Introducer keep
+    // their own full templates and leave these blank.
+    if (r.fields["Cold Ask Block"]) {
+      coldAskByAsk[key] = {
+        block: r.fields["Cold Ask Block"],
+        closer: r.fields["Cold Ask Closer"] || "",
+      };
+    }
+  }
+
+  // Lead Type per template ID. A partner routes cold vs warm by the Lead Type of
+  // the template it is linked to (Partners."Target Template").
+  const leadTypeByTemplateId = new Map(
+    templates.map((t) => [t.id, String(t.fields["Lead Type"] || "").trim()])
+  );
 
   // --- resolve the event -----------------------------------------------------
 
@@ -495,12 +628,16 @@ async function main() {
 
   // --- resolve the template(s) -----------------------------------------------
   //
-  // Touch 1 may have SEVERAL active email templates, one per ask type
-  // (Card / Referral Deal / Co-hosted Event / ...), distinguished by the
-  // template's "Ask" field. Touch 2 and Touch 3 are ask-agnostic and have a
-  // single template each. The Channel filter is still deliberate: without it a
-  // lookup by touch number could grab the Phone or Instagram DM script, which
-  // are also Touch 1.
+  // Touch 1 may have SEVERAL active email templates. They split two ways:
+  //   * By Lead Type: Warm (the single "really glad we got to talk" note) vs
+  //     Cold (the "you kept coming up" cold open). A partner is routed by the
+  //     Lead Type of the template it is linked to.
+  //   * Within Cold, by ask type (Card / Referral Deal / Co-hosted Event / ...),
+  //     distinguished by the template's "Ask" field.
+  // Touch 2 and Touch 3 are ask-agnostic and Lead-Type-agnostic (their Lead Type
+  // is blank, so they land in the cold bucket) with a single template each. The
+  // Channel filter is still deliberate: without it a lookup by touch number
+  // could grab the Phone or Instagram DM script, which are also Touch 1.
 
   const touchTemplates = templates.filter(
     (t) =>
@@ -516,17 +653,31 @@ async function main() {
     process.exit(1);
   }
 
-  // Index by Ask. A template with no Ask is treated as the Card default, which
-  // is what keeps this backward-compatible: with today's single, Ask-less card
-  // template, every partner resolves to it exactly as before.
+  const isWarmTemplate = (t) =>
+    String(t.fields["Lead Type"] || "").trim() === "Warm";
+  const warmTemplate = touchTemplates.find(isWarmTemplate) || null;
+  const coldTemplates = touchTemplates.filter((t) => !isWarmTemplate(t));
+
+  // Index the COLD templates by Ask. A template with no Ask is treated as the
+  // Card default, which is what keeps this backward-compatible: with today's
+  // single, Ask-less card template, every cold partner resolves to it exactly as
+  // before. The warm template is kept OUT of this map so its blank Ask does not
+  // squat the Card slot.
   const templatesByAsk = new Map();
-  for (const t of touchTemplates) {
+  for (const t of coldTemplates) {
     const ask = String(t.fields.Ask || "Card").trim();
     if (!templatesByAsk.has(ask)) templatesByAsk.set(ask, t);
   }
-  const defaultTemplate = templatesByAsk.get("Card") || touchTemplates[0];
+  const defaultTemplate = templatesByAsk.get("Card") || coldTemplates[0];
 
-  // Touch 1 is chosen by the partner's PRIMARY ask, falling back to Card.
+  if (!defaultTemplate) {
+    console.error(
+      `No ACTIVE Cold Email template with Touch Number ${args.touch}. Every touch needs at least a Card template.`
+    );
+    process.exit(1);
+  }
+
+  // Cold Touch 1 is chosen by the partner's PRIMARY ask, falling back to Card.
   // Touch 2 / Touch 3 are ask-agnostic, so every partner gets the one follow-up.
   const resolveTemplate = (bestAsk) => {
     if (args.touch !== 1) return defaultTemplate;
@@ -535,7 +686,8 @@ async function main() {
 
   console.log(
     args.touch === 1
-      ? `Touch 1 templates available by ask: ${[...templatesByAsk.keys()].join(", ")}\n`
+      ? `Touch 1 cold templates by ask: ${[...templatesByAsk.keys()].join(", ")}` +
+          `\nTouch 1 warm template: ${warmTemplate ? warmTemplate.fields["Template Name"] : "none active"}\n`
       : `Template: ${defaultTemplate.fields["Template Name"]}\n`
   );
 
@@ -574,12 +726,15 @@ async function main() {
   const offsetFor = (touchNumber) => {
     // Prefer the Card template when several email templates share a touch
     // number (Touch 1 has one per ask). They all carry the same Send Offset,
-    // so any would do, but keeping it deterministic avoids surprises.
+    // so any would do, but keeping it deterministic avoids surprises. The warm
+    // template is excluded: its blank Ask reads as "Card" and it has no offset,
+    // so it must not be allowed to answer for the cold sequence.
     const candidates = templates.filter(
       (x) =>
         x.fields.Channel === "Email" &&
         Number(x.fields["Touch Number"]) === touchNumber &&
-        x.fields.Active === true
+        x.fields.Active === true &&
+        String(x.fields["Lead Type"] || "").trim() !== "Warm"
     );
     const t =
       candidates.find((x) => String(x.fields.Ask || "Card").trim() === "Card") ||
@@ -621,6 +776,8 @@ async function main() {
   const skippedPrevTouchNotSent = [];
   const skippedTooSoon = [];
   const skippedBadTokens = [];
+  const skippedNoWarmTemplate = [];
+  const skippedNoWarmAsk = [];
 
   // Partners whose City was blank and fell back to DEFAULT_CITY_PHRASE. Not a
   // skip and not an error — the email still reads correctly. Reported at the
@@ -639,6 +796,15 @@ async function main() {
     const p = partner.fields;
     const name = p.Name || partner.id;
     const o = row.fields;
+
+    // Route cold vs warm by the Lead Type of the linked Target Template. No
+    // link, or a link to a cold template, is cold. Warm routing is Touch 1 only
+    // — the follow-ups are a single shared note.
+    const linkedTemplateId = (p["Target Template"] || [])[0];
+    const leadType = linkedTemplateId
+      ? leadTypeByTemplateId.get(linkedTemplateId) || "Cold"
+      : "Cold";
+    const isWarm = args.touch === 1 && leadType === "Warm";
 
     // GATE 0 — HANDWRITE. Some partners must never receive an auto-generated
     // letter. When a business is celebrity-fronted or PR-managed and reached
@@ -712,10 +878,12 @@ async function main() {
       }
     }
 
-    // GATE 5 — the quality gate. A blank Specific Detail means nobody has
-    // found one true, sourced thing to say about this business. Skipped rather
-    // than padded with filler. The blank is a feature.
-    if (!p["Specific Detail"]) {
+    // GATE 5 — the quality gate, COLD ONLY. A blank Specific Detail means nobody
+    // has found one true, sourced thing to say about this business. Skipped
+    // rather than padded with filler. The blank is a feature. The WARM note does
+    // not use Specific Detail — its proof is the meeting that already happened —
+    // so a warm partner is never gated on it.
+    if (!isWarm && !p["Specific Detail"]) {
       skippedNoDetail.push(name);
       continue;
     }
@@ -731,62 +899,125 @@ async function main() {
       continue;
     }
 
-    // {City} is NOT a gate. A blank City degrades to DEFAULT_CITY_PHRASE, which
-    // keeps the sentence true, rather than skipping a partner who has a good
-    // sourced detail and a working email address over a missing metadata field.
-    if (!p.City) usedCityFallback.push(name);
+    // --- build tokens + render, per register ---------------------------------
 
-    // The Secondary Ask line, substituted directly (not via the generic token
-    // renderer). This matters: render() leaves an EMPTY-valued token literal so
-    // it gets caught by the unresolved-token assert. A blank Secondary Ask must
-    // instead disappear cleanly, so it is spliced in here, before render runs.
-    const secondaryAskLine = SECONDARY_ASK_LINES[p["Secondary Ask"]] || "";
-    const spliceSecondary = (str) =>
-      String(str || "").split("{Secondary Ask Line}").join(secondaryAskLine);
+    let template;
+    let subject;
+    let body;
 
-    const communityPhrase =
-      COMMUNITY_PHRASE_BY_OWNERSHIP[p["Ownership"]] || DEFAULT_COMMUNITY_PHRASE;
-    const cityPhrase = p.City || DEFAULT_CITY_PHRASE;
+    if (isWarm) {
+      // WARM. "Really glad we got to talk ..." to someone Jess has already met.
+      if (!warmTemplate) {
+        skippedNoWarmTemplate.push(name);
+        continue;
+      }
 
-    // {Opener Clause} — the entity-aware first clause of the opener sentence.
-    //
-    //   Business (default):  "researching the <phrase> businesses around <city>"
-    //   Organization:        "getting to know the <phrase> corners of <city>"
-    //
-    // An Organization (nonprofit, league, congregation, community center,
-    // chapter, public agency) must not be called a "business" in the very
-    // sentence whose job is proving the email is not a blast. Driven by
-    // Partners."Entity Type", which defaults to Business when blank.
-    //
-    // This is ORTHOGONAL to Best Ask, and that is the point: a queer-owned
-    // business acting as an introducer (BAX) keeps the business opener, and an
-    // organization whose ask is a newsletter mention (Seattle Choruses, Emerald
-    // City Softball) still gets the org opener. Ask type alone could not tell
-    // those apart, which is exactly the edge case this token closes.
-    const isOrganization =
-      String(p["Entity Type"] || "").trim() === "Organization";
-    const openerClause = isOrganization
-      ? `getting to know the ${communityPhrase} corners of ${cityPhrase}`
-      : `researching the ${communityPhrase} businesses around ${cityPhrase}`;
+      // The ask sentence comes whole from Ask Snippets, keyed by Best Ask.
+      // No match = skip loudly rather than mail a body with a hole in it.
+      const askSentence = askSentenceByAsk[String(p["Best Ask"] || "Card").trim()];
+      if (!askSentence) {
+        skippedNoWarmAsk.push(`${name} (${p["Best Ask"] || "no Best Ask"})`);
+        continue;
+      }
 
-    const tokens = {
-      "Greeting Name": p["Greeting Name"] || "there",
-      "Partner Name": p.Name,
-      "Specific Detail": p["Specific Detail"],
-      City: cityPhrase,
-      "Event Date": event.fields["Event Date (Display)"],
-      "Event Portfolio": event.fields["Portfolio Partner"],
-      "Event Hook": event.fields["Event Hook"],
-      "Registration URL": event.fields["Registration URL"],
-      "Community Phrase": communityPhrase,
-      "Opener Clause": openerClause,
-    };
+      const identityLine =
+        identityLineByOwnership[p["Ownership"]] ||
+        identityLineByOwnership["Unverified"] ||
+        "";
+      const memoryJog = computeMemoryJog(p["Last Interaction"] || p["Met Date"]);
+      const callback = p["Callback"] || "";
 
-    // Per-partner template, chosen by primary ask (Touch 1). See resolveTemplate.
-    const template = resolveTemplate(p["Best Ask"]);
+      // {Callback} and {Memory Jog} are blank-safe and must DISAPPEAR when empty
+      // rather than trip the unresolved-token assert, so they are spliced in
+      // before render — the same trick used for {Secondary Ask Line}.
+      const spliceWarm = (str) =>
+        String(str || "")
+          .split("{Callback}")
+          .join(callback)
+          .split("{Memory Jog}")
+          .join(memoryJog);
 
-    const subject = render(spliceSecondary(template.fields["Subject Template"]), tokens);
-    const body = render(spliceSecondary(template.fields["Body Template"]), tokens);
+      const tokens = {
+        "Greeting Name": p["Greeting Name"] || "there",
+        "Partner Name": p.Name,
+        "Meeting Context": p["Meeting Context"],
+        "Identity Line": identityLine,
+        "Ask Sentence": askSentence,
+      };
+
+      template = warmTemplate;
+      subject = renderDeep(spliceWarm(template.fields["Subject Template"]), tokens);
+      body = renderDeep(spliceWarm(template.fields["Body Template"]), tokens);
+    } else {
+      // COLD. "You kept coming up." The opener clause and its nested {City} come
+      // from the Opener & Identity Lines table, keyed by Ownership.
+      if (!p.City) usedCityFallback.push(name);
+
+      const secondaryAskLine = SECONDARY_ASK_LINES[p["Secondary Ask"]] || "";
+
+      // The consolidated cold favor template carries {Cold Ask Block} (the whole
+      // ask paragraph, keyed by Best Ask) and a blank-safe {Cold Ask Closer}
+      // (only the Card ask sets one). Referral Deal and Introducer keep their own
+      // full templates and simply do not contain these tokens, so the lookup is
+      // harmless for them. Unknown or blank ask falls back to Card.
+      const coldAsk =
+        coldAskByAsk[String(p["Best Ask"] || "Card").trim()] ||
+        coldAskByAsk["Card"] || { block: "", closer: "" };
+
+      // {Cold Ask Closer} and {Secondary Ask Line} are blank-safe and must
+      // DISAPPEAR when empty rather than trip the unresolved-token assert, so
+      // both are spliced in before render.
+      const spliceCold = (str) =>
+        String(str || "")
+          .split("{Secondary Ask Line}")
+          .join(secondaryAskLine)
+          .split("{Cold Ask Closer}")
+          .join(coldAsk.closer || "");
+
+      const cityPhrase = p.City || DEFAULT_CITY_PHRASE;
+
+      // {Opener Clause} is entity-aware. An Organization (nonprofit, league,
+      // congregation, agency) must NOT be called a "business" in the very
+      // sentence whose job is proving the email is not a blast (the 9.9
+      // mislabeled-entity error). Business (the blank default) gets "researching
+      // the ... businesses around {City}"; Organization gets "getting to know
+      // the ... corners of {City}". Both variants are keyed by Ownership and
+      // carry a nested {City}. The org variant falls back to the business one if
+      // a row is missing it, and either falls back to the Unverified row.
+      const isOrganization =
+        String(p["Entity Type"] || "").trim() === "Organization";
+      const businessOpener =
+        openerClauseByOwnership[p["Ownership"]] ||
+        openerClauseByOwnership["Unverified"] ||
+        "";
+      const orgOpener =
+        openerClauseOrgByOwnership[p["Ownership"]] ||
+        openerClauseOrgByOwnership["Unverified"] ||
+        "";
+      const openerClause = (isOrganization ? orgOpener : businessOpener) || businessOpener;
+
+      const tokens = {
+        "Greeting Name": p["Greeting Name"] || "there",
+        "Partner Name": p.Name,
+        "Specific Detail": p["Specific Detail"],
+        City: cityPhrase,
+        "Event Date": event.fields["Event Date (Display)"],
+        "Event Portfolio": event.fields["Portfolio Partner"],
+        "Event Hook": event.fields["Event Hook"],
+        "Registration URL": event.fields["Registration URL"],
+        "Opener Clause": openerClause, // contains a nested {City}; renderDeep resolves it
+        "Cold Ask Block": coldAsk.block, // the whole ask paragraph, keyed by Best Ask
+      };
+
+      // Per-partner template, chosen by primary ask (Touch 1). See resolveTemplate.
+      // With the consolidated set, Card / Newsletter / Social Post / Co-hosted
+      // Event all resolve to the single favor template (Card is the default), and
+      // {Cold Ask Block} supplies the ask. Referral Deal and Introducer still map
+      // to their own templates.
+      template = resolveTemplate(p["Best Ask"]);
+      subject = renderDeep(spliceCold(template.fields["Subject Template"]), tokens);
+      body = renderDeep(spliceCold(template.fields["Body Template"]), tokens);
+    }
 
     const unresolved = findUnresolvedTokens(subject, body);
     if (unresolved.length) {
@@ -862,6 +1093,16 @@ async function main() {
     "the quality gate, working as designed. Write one sourced sentence or leave them out"
   );
   reportSkips(
+    "warm partner, no matching Ask Snippet",
+    skippedNoWarmAsk,
+    "add an Assembled Example for this Best Ask in Ask Snippets, or fix the partner's Best Ask"
+  );
+  reportSkips(
+    "warm partner, no active warm template",
+    skippedNoWarmTemplate,
+    "activate the Lead Type = Warm Touch 1 template in Templates"
+  );
+  reportSkips(
     "not an Email channel",
     skippedNotEmail,
     "route these to the Phone / Instagram DM scripts in Templates"
@@ -875,7 +1116,7 @@ async function main() {
   reportSkips("UNRESOLVED TOKENS", skippedBadTokens, "template or Event data is incomplete");
 
   // Not a skip. These drafted fine, but their City cell is empty, so the email
-  // says "around the Pacific Northwest" instead of naming their town. Fixable
+  // says "around the Puget Sound area" instead of naming their town. Fixable
   // in ten seconds in Airtable, and worth knowing about before you send.
   if (usedCityFallback.length) {
     console.log(
