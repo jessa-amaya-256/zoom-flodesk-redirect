@@ -1029,10 +1029,20 @@ async function main() {
         "";
       const openerClause = (isOrganization ? orgOpener : businessOpener) || businessOpener;
 
+      // {Identity Line} is ownership-keyed, exactly as on the warm path: the
+      // verified-queer-owned row carries the "too" that claims shared identity,
+      // every other tier gets the plain line with no "too". Same source table
+      // and same fallback to the Unverified row, so cold and warm never drift.
+      const identityLine =
+        identityLineByOwnership[p["Ownership"]] ||
+        identityLineByOwnership["Unverified"] ||
+        "";
+
       const tokens = {
         "Greeting Name": p["Greeting Name"] || "there",
         "Partner Name": p.Name,
         "Specific Detail": p["Specific Detail"],
+        "Identity Line": identityLine,
         City: cityPhrase,
         "Event Date": event.fields["Event Date (Display)"],
         "Event Portfolio": event.fields["Portfolio Partner"],
