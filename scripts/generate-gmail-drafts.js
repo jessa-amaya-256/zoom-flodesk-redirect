@@ -91,7 +91,14 @@
  *   node scripts/generate-gmail-drafts.js --create --limit 3  create the first 3
  *   node scripts/generate-gmail-drafts.js --create            create all eligible
  *   node scripts/generate-gmail-drafts.js --touch=2 --create  day-8 follow-up (touch 3 = day 18, then STOP)
+ *   node scripts/generate-gmail-drafts.js --wave=1 --create   only Wave 1 partners
  *   --event=<slug>  override the auto-selected cycle
+ *   --wave=<n|name> draft only partners in ONE wave (matches the Partners
+ *                   "Wave" field). Accepts a number, --wave=1, or any part of
+ *                   the name, --wave="Snohomish". Composes with every other flag.
+ *                   Note: this only narrows WHICH rows are considered. The email
+ *                   generator still drafts only Contact Method = Email partners,
+ *                   so a wave with phone / DM / form partners yields fewer drafts.
  *   --force         re-draft a sent touch, or draft a follow-up early. Does NOT
  *                   override the Replied gate or the Cluster gate. Nothing does.
  *
@@ -249,7 +256,21 @@ function parseArgs(argv) {
     create: argv.includes("--create"),
     force: argv.includes("--force"),
     limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+    wave: getEq("wave") || null,
   };
+}
+
+// Does a partner's "Wave" value match the --wave query?
+// Accepts a bare number (--wave=1 matches "Wave 1 — Snohomish") or any
+// case-insensitive substring of the wave name (--wave="Snohomish"). A blank
+// query matches everything, so --wave omitted leaves behavior unchanged.
+function waveMatches(partnerWave, query) {
+  if (!query) return true;
+  const w = String(partnerWave || "").toLowerCase().trim();
+  if (!w) return false;
+  const q = String(query).toLowerCase().trim();
+  if (/^\d+$/.test(q)) return new RegExp(`\\bwave\\s*${q}\\b`).test(w);
+  return w.includes(q);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +473,7 @@ async function main() {
         "Cluster", // one human, multiple rooms. See GATE 1.
         "Cluster Lead", // exactly one row per cluster gets the letter.
         "Best Ask", // selects the cold Touch 1 template AND the warm ask sentence.
+        "Wave", // geographic send-sequence. Read only when --wave narrows the run.
         "Secondary Ask", // fills {Secondary Ask Line}. Blank -> token renders empty.
         "Ownership", // keys {Opener Clause} and warm {Identity Line}.
         "Entity Type", // Business (default) vs Organization -> picks the opener variant.
@@ -601,6 +623,7 @@ async function main() {
     console.log("          NOTE: --force does NOT override the Replied gate or");
     console.log("          the Cluster gate. Neither is ever what you meant.");
   }
+  if (args.wave) console.log(` Wave:  ${args.wave} (only this wave)`);
   if (args.limit) console.log(` Limit: first ${args.limit} eligible partner(s) only`);
   console.log("");
   console.log(" NOTE: Draft Subject/Body in Airtable = a draft was made.");
@@ -692,8 +715,18 @@ async function main() {
   );
 
   const partnersById = new Map(partners.map((p) => [p.id, p]));
-  const rows = outreach.filter((o) => (o.fields.Event || []).includes(event.id));
-  console.log(`Outreach rows for this event: ${rows.length}\n`);
+  const rows = outreach.filter((o) => {
+    if (!(o.fields.Event || []).includes(event.id)) return false;
+    if (!args.wave) return true;
+    // --wave narrows to a single wave. Wave lives on the linked Partner row,
+    // not on Outreach, so resolve it through partnersById first.
+    const partnerId = (o.fields.Partner || [])[0];
+    const partner = partnerId ? partnersById.get(partnerId) : null;
+    return waveMatches(partner && partner.fields.Wave, args.wave);
+  });
+  console.log(
+    `Outreach rows for this event${args.wave ? ` (wave: ${args.wave})` : ""}: ${rows.length}\n`
+  );
 
   // --- sequence rules --------------------------------------------------------
   //
