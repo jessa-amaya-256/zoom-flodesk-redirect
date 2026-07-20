@@ -227,7 +227,16 @@ const TOKEN_PATH = path.join(REPO_ROOT, "token.json");
 
 // gmail.compose = create/read/modify drafts. Deliberately NOT gmail.send —
 // this script has no ability to actually send mail, by design.
-const SCOPES = ["https://www.googleapis.com/auth/gmail.compose"];
+// gmail.settings.basic (READ-ONLY) = read the account's own signature so
+// API-created drafts carry it. Drafts made through the API do NOT inherit the
+// Gmail-settings signature the compose window adds, so we fetch and append it.
+// NOTE: adding this scope invalidates an older token. If the signature fetch
+// fails with an insufficient-scope error, delete token.json and re-run to
+// re-authorize.
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/gmail.settings.basic",
+];
 
 // ---------------------------------------------------------------------------
 // args
@@ -423,18 +432,53 @@ async function authorize() {
  * mid-sentence. Base64 MIME has no special characters, so the whole class of
  * bug disappears.
  */
-function buildRawMessage(to, subject, bodyText) {
+// Escape the plain-text body and turn its newlines into <br> so the HTML part
+// keeps the exact line and paragraph spacing the plain text has. Partner names
+// legitimately contain "&" (Cone & Steiner, Horseshoe Bar & Cabaret), so the
+// ampersand escape is load-bearing, not decorative.
+function textToHtml(text) {
+  const esc = String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return esc.replace(/\r?\n/g, "<br>\n");
+}
+
+// A multipart/alternative message: a text/plain part (the body exactly as the
+// dry run shows it) and a text/html part (the same body plus the real Gmail
+// signature). Recipients on any client get one or the other. The signature is
+// HTML with images, which is why the message has to be HTML at all — a plain
+// draft cannot render the logo, badges, or social icons.
+function buildRawMessage(to, subject, bodyText, signatureHtml) {
   const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
-  const bodyBase64 = Buffer.from(bodyText, "utf8").toString("base64");
+  const boundary = "----=_JCPart_b0undary_9f2a7c4d";
+
+  const htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#111111;">' +
+    textToHtml(bodyText) +
+    (signatureHtml ? `<br><br>${signatureHtml}` : "") +
+    "</div>";
+
+  const plainBase64 = Buffer.from(bodyText, "utf8").toString("base64");
+  const htmlBase64 = Buffer.from(htmlBody, "utf8").toString("base64");
 
   const mime = [
     `To: ${to}`,
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
     'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
     "",
-    bodyBase64,
+    plainBase64,
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    htmlBase64,
+    `--${boundary}--`,
   ].join("\r\n");
 
   return Buffer.from(mime, "utf8")
@@ -442,6 +486,20 @@ function buildRawMessage(to, subject, bodyText) {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
+}
+
+// Read the account's own signature (HTML) from Gmail settings. Prefer the
+// primary address; fall back to any send-as that has a signature set. Returns
+// "" if none is configured.
+async function fetchSignature(gmail) {
+  const res = await gmail.users.settings.sendAs.list({ userId: "me" });
+  const sendAs = (res.data && res.data.sendAs) || [];
+  const primary = sendAs.find((s) => s.isPrimary) || {};
+  const sig =
+    primary.signature ||
+    (sendAs.find((s) => s.signature && s.signature.trim()) || {}).signature ||
+    "";
+  return String(sig).trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,11 +1268,33 @@ async function main() {
   const auth = await authorize();
   const gmail = google.gmail({ version: "v1", auth });
 
+  // Pull the real Gmail signature once, up front, so every draft this run
+  // carries it. Fail loud rather than quietly create unsigned drafts, since
+  // signing is the whole point of this step.
+  let signatureHtml = "";
+  try {
+    signatureHtml = await fetchSignature(gmail);
+  } catch (err) {
+    console.error(
+      `\nCould not read your Gmail signature: ${err.message}\n` +
+        "If that is an insufficient-scope / permission error, delete token.json " +
+        "and re-run to re-authorize (a read-only settings scope was added).\n"
+    );
+    process.exit(1);
+  }
+  if (!signatureHtml) {
+    console.error(
+      "\nYour Gmail signature came back empty. Set one in Gmail Settings, then " +
+        "re-run. Aborting so nothing goes out unsigned.\n"
+    );
+    process.exit(1);
+  }
+
   console.log(`Creating ${toProcess.length} draft(s)...\n`);
   const succeeded = [];
 
   for (const d of toProcess) {
-    const raw = buildRawMessage(d.email, d.subject, d.body);
+    const raw = buildRawMessage(d.email, d.subject, d.body, signatureHtml);
     try {
       await gmail.users.drafts.create({
         userId: "me",
