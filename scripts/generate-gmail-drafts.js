@@ -456,7 +456,9 @@ function buildRawMessage(to, subject, bodyText, signatureHtml) {
   const htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#111111;">' +
     textToHtml(bodyText) +
-    (signatureHtml ? `<br><br>${signatureHtml}` : "") +
+    // The "-- " line is the RFC 3676 signature delimiter. It renders as a
+    // visible "--" and lets mail clients recognize and collapse the signature.
+    (signatureHtml ? `<br><br>-- <br>${signatureHtml}` : "") +
     "</div>";
 
   const plainBase64 = Buffer.from(bodyText, "utf8").toString("base64");
